@@ -231,6 +231,9 @@ class ConversationsController extends Controller
         $prev_conversations = [];
         if ($customer) {
             $prev_conversations = $mailbox->conversations()
+                                    ->when($user->canSeeOnlyAssignedConversations(), function ($query) use ($user) {
+                                        return $query->where('conversations.user_id', $user->id);
+                                    })
                                     ->where('customer_id', $customer->id)
                                     ->where('id', '<>', $conversation->id)
                                     ->where('status', '!=', Conversation::STATUS_SPAM)
@@ -482,7 +485,7 @@ class ConversationsController extends Controller
     /**
      * Clone conversation.
      */
-    public function cloneConversation(Request $request, $mailbox_id, $from_thread_id)
+    public function cloneConversation(Request $request, $mailbox_id, $from_thread_id, $token)
     {
         $mailbox = Mailbox::findOrFail($mailbox_id);
         $this->authorize('view', $mailbox);
@@ -494,6 +497,10 @@ class ConversationsController extends Controller
                 $orign_conv = $orig_thread->conversation;
                 $this->authorize('view', $orign_conv);
 
+                if (csrf_token() != $token) {
+                    \Session::flash('flash_error_floating', __('Not enough permissions'));
+                    return redirect()->away($orign_conv->url($orign_conv->folder_id));
+                }
 
 		        // $thread = $orig_thread->replicate();
 		        // $thread->id = '';
@@ -841,7 +848,7 @@ class ConversationsController extends Controller
                 }
 
                 // Check max. message size.
-                if (!$response['msg']) {
+                if (!$response['msg'] && !$is_note) {
 
                     $max_message_size = (int)config('app.max_message_size');
                     if ($max_message_size) {
@@ -853,13 +860,17 @@ class ConversationsController extends Controller
                         $attachments_ids = $this->decodeAttachmentsIds($attachments_ids);
 
                         if (count($attachments_ids)) {
-                            $attachments_to_check = Attachment::select('size')->whereIn('id', $attachments_ids)->get();
-                            foreach ($attachments_to_check as $attachment) {
+                            $attachments_query = Attachment::select('size')->whereIn('id', $attachments_ids);
+                            // Skip embedded images.
+                            if (!\Eventy::filter('attachments.embedded.check_size', false)) {
+                                $attachments_query->where('embedded', false);
+                            }
+                            foreach ($attachments_query->get() as $attachment) {
                                 $message_size += (int)$attachment->size;
                             }
                         }
 
-                        if ($message_size > $max_message_size*1024*1024) {
+                        if ($message_size*1.37 > $max_message_size*1024*1024) {
                             $response['msg'] = __('Message is too large — :info. Please shorten your message or remove some attachments.', ['info' => __('Max. Message Size').': '.$max_message_size.' MB']);
                         }
                     }
@@ -1423,6 +1434,7 @@ class ConversationsController extends Controller
                 }
 
                 $conversation = null;
+                // Conversation does not exist yet.
                 $new = true;
                 if (!$response['msg'] && !empty($request->conversation_id)) {
                     $conversation = Conversation::find($request->conversation_id);
@@ -1433,6 +1445,7 @@ class ConversationsController extends Controller
                     }
                 }
 
+                // Draft saved from "New Conversation" page.
                 $is_create = false;
                 if (!empty($request->is_create)) {
                     $is_create = true;
@@ -1476,8 +1489,19 @@ class ConversationsController extends Controller
                     }
                 }
 
+                // Make sure that conversation is in Draft state.
+                // https://github.com/freescout-help-desk/freescout/security/advisories/GHSA-6ff4-3w2c-mjj8
+                if (!$response['msg']
+                    && $conversation
+                    && !$conversation->isDraft()
+                    && ($new || $is_create)
+                ) {
+                    $response['msg'] = __('Message has been already sent. Please discard this draft.');
+                }
+
                 // Validation is not needed on draft create, fields can be empty
 
+                // Update conversation data.
                 if (!$response['msg']) {
 
                     // Get attachments info
@@ -1800,12 +1824,14 @@ class ConversationsController extends Controller
                                         $attachment_copy = $attachment;
                                     }
 
-                                    $attachments[] = [
-                                        'id'   => encrypt($attachment_copy->id),
-                                        'name' => $attachment_copy->file_name,
-                                        'size' => $attachment_copy->size,
-                                        'url'  => $attachment_copy->url(),
-                                    ];
+                                    if ($attachment_copy) {
+                                        $attachments[] = [
+                                            'id'   => encrypt($attachment_copy->id),
+                                            'name' => $attachment_copy->file_name,
+                                            'size' => $attachment_copy->size,
+                                            'url'  => $attachment_copy->url(),
+                                        ];
+                                    }
                                 }
                             }
                         }
@@ -1876,8 +1902,15 @@ class ConversationsController extends Controller
                     $response['msg'] = __('Not enough permissions');
                 }
 
-                if (!$response['msg'] && $target_customer && !$user->can('view', $target_customer)) {
-                    $response['msg'] = __('Not enough permissions');
+                // Allow to change customer when user creates a customer
+                // while changing conversation's customer
+                // and APP_LIMIT_USER_CUSTOMER_VISIBILITY is enabled.
+                if (session()->get('user_created_customer') == $target_customer->id) {
+                    session()->forget('user_created_customer');
+                } else {
+                    if (!$response['msg'] && $target_customer && !$user->can('view', $target_customer)) {
+                        $response['msg'] = __('Not enough permissions');
+                    }
                 }
 
                 if (!$response['msg']) {
@@ -1920,11 +1953,11 @@ class ConversationsController extends Controller
                 }
 
                 if (!$response['msg']) {
-                    $folder_id = $conversation->getCurrentFolder();
+                    $redirect_url = $this->getRedirectUrlAfterDelete($conversation, $user);
 
                     $conversation->deleteToFolder($user);
 
-                    $response['redirect_url'] = route('mailboxes.view.folder', ['id' => $conversation->mailbox_id, 'folder_id' => $folder_id]);
+                    $response['redirect_url'] = $redirect_url;
 
                     $response['status'] = 'success';
 
@@ -1942,7 +1975,7 @@ class ConversationsController extends Controller
                 }
 
                 if (!$response['msg']) {
-                    $folder_id = $conversation->getCurrentFolder();
+                    $redirect_url = $this->getRedirectUrlAfterDelete($conversation, $user);
                     $mailbox = $conversation->mailbox;
 
                     $conversation->deleteForever();
@@ -1950,7 +1983,7 @@ class ConversationsController extends Controller
                     // Recalculate only old and new folders
                     $mailbox->updateFoldersCounters();
 
-                    $response['redirect_url'] = route('mailboxes.view.folder', ['id' => $conversation->mailbox_id, 'folder_id' => $folder_id]);
+                    $response['redirect_url'] = $redirect_url;
 
                     $response['status'] = 'success';
 
@@ -2178,19 +2211,26 @@ class ConversationsController extends Controller
                 }
 
                 // Check access to the mailbox.
-                $folder = Folder::find($request->folder_id ?? '');
+                $mailbox = Mailbox::find($request->mailbox_id ?? '');
+                $folder = null;
 
-                if (!$folder) {
-                    $response['msg'] = __('Folder not found');
-                    return \Response::json($response);
-                }
-                if (!in_array($folder->type, [Folder::TYPE_SPAM, Folder::TYPE_DELETED])) {
-                    $response['msg'] = __('Folder not found');
-                    return \Response::json($response);
-                }
-                if (!$folder->mailbox->userHasAccess($user->id)) {
-                    $response['msg'] = __('Not enough permissions');
-                    return \Response::json($response);
+                if ($mailbox) {
+                    $folder = Folder::find($request->folder_id ?? '');
+
+                    if (!$folder || $folder->mailbox_id != $mailbox->id
+                        || !in_array($folder->type, [Folder::TYPE_SPAM, Folder::TYPE_DELETED])
+                    ) {
+                        $response['msg'] = __('Folder not found');
+                        return \Response::json($response);
+                    }
+                    if (!$mailbox->userHasAccess($user->id)) {
+                        $response['msg'] = __('Not enough permissions');
+                        return \Response::json($response);
+                    }
+                } else {
+                    // Virtual mailbox:
+                    // folder_id contains folder type and folders of this type
+                    // are emptied by the module in all mailboxes via the hook below.
                 }
 
                 $response = \Eventy::filter('conversations.empty_folder', $response, 
@@ -2424,6 +2464,35 @@ class ConversationsController extends Controller
                 }
                 break;
 
+            case 'conv_list':
+                $mailbox = Mailbox::find($request->mailbox_id);
+                $folder = null;
+
+                if (!$mailbox) {
+                    $response['msg'] = __('Mailbox not found');
+                } elseif (!$mailbox->userHasAccess($user->id)) {
+                    $response['msg'] = __('Action not authorized');
+                }
+
+                if (!$response['msg']) {
+                    $folder = $mailbox->getAssesibleFolders()->where('id', (int)$request->folder_id)->first();
+                    if (!$folder || !$user->can('view', $folder)) {
+                        $response['msg'] = __('Not enough permissions');
+                    }
+                }
+
+                if (!$response['msg']) {
+                    $conversations = Conversation::getConvList($user, $folder, (int)$request->offset);
+
+                    $response['html'] = \View::make('conversations/partials/conv_list')->with([
+                            //'folder'                  => $folder,
+                            'conversations'           => $conversations,
+                            'current_conversation_id' => (int)$request->conversation_id,
+                        ])->render();
+                    $response['status'] = 'success';
+                }
+                break;
+
             case 'retry_send':
                 $thread = Thread::find($request->thread_id);
 
@@ -2472,6 +2541,9 @@ class ConversationsController extends Controller
                         $conversation_id = (int)$request->conversation_id ?? 0;
 
                         $prev_conversations = $mailbox->conversations()
+                            ->when($user->canSeeOnlyAssignedConversations(), function ($query) use ($user) {
+                                return $query->where('conversations.user_id', $user->id);
+                            })
                             ->where('customer_id', $customer->id)
                             ->where('id', '<>', $conversation_id)
                             ->where('status', '!=', Conversation::STATUS_SPAM)
@@ -2692,6 +2764,9 @@ class ConversationsController extends Controller
 
         if ($conversation->customer_id) {
             $prev_conversations = $conversation->mailbox->conversations()
+                                    ->when($user->canSeeOnlyAssignedConversations(), function ($query) use ($user) {
+                                        return $query->where('conversations.user_id', $user->id);
+                                    })
                                     ->where('customer_id', $conversation->customer_id)
                                     ->where('id', '<>', $conversation->id)
                                     ->where('status', '!=', Conversation::STATUS_SPAM)
@@ -2825,6 +2900,20 @@ class ConversationsController extends Controller
     }
 
     /**
+     * Where to go after deleting a conversation.
+     * Follows the user's "after send" setting, as changing the status does: "Next active conversation" opens it,
+     * anything else shows the folder. Must be called before the conversation is deleted.
+     */
+    public function getRedirectUrlAfterDelete($conversation, $user)
+    {
+        if ($conversation->mailbox->getUserSettings($user->id)->after_send == MailboxUser::AFTER_SEND_NEXT) {
+            return $conversation->urlNext(Conversation::getFolderParam(), Conversation::STATUS_ACTIVE, true);
+        }
+
+        return route('mailboxes.view.folder', ['id' => $conversation->mailbox_id, 'folder_id' => $conversation->getCurrentFolder()]);
+    }
+
+    /**
      * Upload files and images.
      */
     public function upload(Request $request)
@@ -2893,10 +2982,11 @@ class ConversationsController extends Controller
             $response['msg'] = __('Not enough permissions');
         }
 
+        // Check access to the folder already includes checking access to mailbox.
         // We should not use mailbox_id from the request, as it can be changed.
-        if (!$response['msg'] && !$user->can('view', $folder->mailbox)) {
-            $response['msg'] = __('Not enough permissions');
-        }
+        // if (!$response['msg'] && !$user->can('view', $folder->mailbox)) {
+        //     $response['msg'] = __('Not enough permissions');
+        // }
 
         if (!$response['msg']) {
             $query_conversations = Conversation::getQueryByFolder($folder, $user->id);
@@ -3177,6 +3267,11 @@ class ConversationsController extends Controller
             $query_customers->whereIn('conversations.mailbox_id', $mailbox_ids);
         }
 
+        if (!empty($filters['company']) && is_string($filters['company'])) {
+            $company_like = '%'.mb_strtolower(trim($filters['company'])).'%';
+            $query_customers->where('customers.company', \Helper::isPgSql() ? 'ilike' : 'like', $company_like);
+        }
+
         $query_customers = \Eventy::filter('search.customers.apply_filters', $query_customers, $filters, $q);
 
         return $query_customers->paginate(50);
@@ -3365,8 +3460,8 @@ class ConversationsController extends Controller
 
         // Restore conversation data from penultimate thread
         if ($last_thread) {
-            $conversation->setCc($last_thread->cc);
-            $conversation->setBcc($last_thread->bcc);
+            $conversation->setCc($last_thread->getCcArray());
+            $conversation->setBcc($last_thread->getBccArray());
             $conversation->last_reply_at = $last_thread->created_at;
             $conversation->last_reply_from = $last_thread->source_via;
             $conversation->user_updated_at = date('Y-m-d H:i:s');

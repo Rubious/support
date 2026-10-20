@@ -10,6 +10,7 @@ use App\Events\ConversationCustomerChanged;
 use App\Events\CustomerCreatedConversation;
 use App\Events\CustomerReplied;
 use App\Events\UserReplied;
+use App\Jobs\SendEmailReplyError;
 use App\Mailbox;
 use App\Misc\Mail;
 use App\Option;
@@ -225,11 +226,22 @@ class FetchEmails extends Command
         } catch (\Exception $e) {
             $error = $e->getMessage();
 
-            // POP3 uses LegacyProtocol.php
+            // For POP3. Before it used LegacyProtocol.php.
+            // Keeping it in case PopProtocol.php also throws such error.
             // https://github.com/freescout-helpdesk/freescout/issues/4060
             if ($error && \Str::startsWith($error, 'Mailbox is empty')) {
                 $this->line('['.date('Y-m-d H:i:s').'] Fetched: 0');
                 return;
+            }
+
+            // Retry one transient TLS handshake failure.
+            // https://github.com/freescout-help-desk/freescout/pull/5626
+            if ($error
+                && \Str::startsWith($error, 'connection failed - stream_socket_client(): SSL operation failed')
+                && stripos($error, 'SSL routines::wrong version number') !== false
+            ) {
+                usleep(self::MAX_SLEEP);
+                $client->connect();
             } else {
                 throw $e;
             }
@@ -246,6 +258,13 @@ class FetchEmails extends Command
             try {
                 $folder = \MailHelper::getImapFolder($client, $folder_name);
             } catch (\Exception $e) {
+                // If the stream has timed out there is no point in asking about other folders.
+                // https://github.com/freescout-help-desk/freescout/issues/5724
+                if ($this->isStreamTimeout($e->getMessage())) {
+                    $this->logError('Folder: '.$folder_name.'; Error: '.$e->getMessage());
+                    $folders = [];
+                    break;
+                }
                 // Just log error and continue.
                 $this->error('['.date('Y-m-d H:i:s').'] IMAP folder ('.$folder_name.') not found on the mail server: '.$e->getMessage());
             }
@@ -304,8 +323,17 @@ class FetchEmails extends Command
                 // If the SEARCH count fails (e.g. charset issues on some servers), fall
                 // back to a single bunch so we never silently fetch nothing. The
                 // per-bunch charset retry below still recovers the rest on such servers.
-                $total_messages = $page_size;
                 $this->logError('Folder: '.$folder->name.'; Count error: '.$e->getMessage());
+
+                // The stream has timed out: do not reuse the dead socket for fetching messages,
+                // it would just wait for another full timeout. Give up on this mailbox,
+                // the next fetch run will retry.
+                // https://github.com/freescout-help-desk/freescout/issues/5724
+                if ($this->isStreamTimeout($e->getMessage())) {
+                    break;
+                }
+
+                $total_messages = $page_size;
             }
             $total_pages = ($page_size > 0) ? (int) ceil($total_messages / $page_size) : 1;
 
@@ -326,11 +354,16 @@ class FetchEmails extends Command
 
                     $messages = $messages_query->get();
 
-                    if (method_exists($client, 'getLastError')) {
-                        $last_error = $client->getLastError();
-                    }
+                    $last_error = $client->getLastError();
                 } catch (\Exception $e) {
                     $last_error = $e->getMessage().'; File: '.$e->getFile().' ('.$e->getLine().')'.')';
+                }
+
+                // The stream has timed out: stop working with this mailbox.
+                // https://github.com/freescout-help-desk/freescout/issues/5724
+                if ($last_error && $this->isStreamTimeout($last_error)) {
+                    $this->logError('Folder: '.$folder->name.'; Error: '.$last_error);
+                    break 2;
                 }
 
                 if ($last_error && stristr($last_error, 'The specified charset is not supported')) {
@@ -344,16 +377,12 @@ class FetchEmails extends Command
                     $messages = $messages_query->get();
 
                     $no_charset = true;
-                    if (count($client->getErrors()) > $errors_count) {
-                        $last_error = $client->getLastError();
-                    } else {
-                        $last_error = null;
-                    }
+                    $last_error = $client->getLastError();
                 }
 
                 if ($last_error && !\Str::startsWith($last_error, 'Mailbox is empty')) {
                     // Throw exception for INBOX only
-                    if ($folder->name == 'INBOX' && !$messages) {
+                    if ($folder->name == 'INBOX' && $messages->isEmpty()) {
                         throw new \Exception($last_error, 1);
                     } else {
                         $this->error('['.date('Y-m-d H:i:s').'] '.$last_error);
@@ -474,8 +503,10 @@ class FetchEmails extends Command
             // https://github.com/freescout-help-desk/freescout/issues/5591
             $new_email_with_same_message_id = false;
             if (!$extra && $duplicate_message_id) {
-                // Compare headers
-                if ($duplicate_message_id->headers != $this->headerToStr($message->getHeader())) {
+                if (self::isNewEmailWithSameMessageId(
+                    $duplicate_message_id->headers,
+                    $this->headerToStr($message->getHeader())
+                )) {
                     $new_email_with_same_message_id = true;
                 }
             }
@@ -958,7 +989,16 @@ class FetchEmails extends Command
             // is mentioned as <test@example.org> and it will interpret it as a tag.
             // https://github.com/freescout-helpdesk/freescout/issues/4036
 
+            $full_body = $body;
+
             $body = $this->separateReply($body, $is_html, $is_reply, !$message_from_customer, (($message_from_customer && $prev_thread) ? $prev_thread->getMessageId($mailbox) : ''));
+
+            // Inline images which were referenced only in the quoted part of the email
+            // (removed by separateReply()) must not be saved as attachments.
+            if ($is_html) {
+                $attachments = $this->removeQuotedInlineAttachments($attachments, $full_body, $body);
+            }
+            $full_body = null;
 
             // Create customers
             $emails = array_merge(
@@ -1060,7 +1100,7 @@ class FetchEmails extends Command
                     $this->setSeen($message, $mailbox);
 
                     // Send "Unable to process your update email" to user
-                    \App\Jobs\SendEmailReplyError::dispatch($from, $user, $mailbox)->onQueue('emails');
+                    SendEmailReplyError::dispatch($from, $user, $mailbox)->onQueue('emails');
 
                     return;
                 }
@@ -1070,7 +1110,7 @@ class FetchEmails extends Command
                 if (!$prev_thread) {
                     $this->logError("Support agent's reply to the email notification could not be processed as previous thread could not be determined.");
                     $this->setSeen($message, $mailbox);
-
+                    SendEmailReplyError::dispatch($from, $user, $mailbox, __("The conversation you replied to could not be found."))->onQueue('emails');
                     return;
                 }
 
@@ -1078,7 +1118,7 @@ class FetchEmails extends Command
                 if (!$user->can('view', $prev_thread->conversation)) {
                     $this->logError("Support agent (ID: ".$user->id.") has no accesss to the conversation #".$prev_thread->conversation->number." anymore and can not reply to the conversation.");
                     $this->setSeen($message, $mailbox);
-
+                    SendEmailReplyError::dispatch($from, $user, $mailbox, __("You no longer have access to the conversation you replied to. Please contact your administrator."))->onQueue('emails');
                     return;
                 }
 
@@ -1103,7 +1143,15 @@ class FetchEmails extends Command
                 $this->logError('Error occurred processing message');
             }
         } catch (\Exception $e) {
-            $this->setSeen($message, $mailbox);
+            // The connection may be already closed or timed out (for example when
+            // the message is processed in the extra_import loop after disconnect),
+            // setSeen() must not break the whole fetching run.
+            // https://github.com/freescout-help-desk/freescout/issues/5724
+            try {
+                $this->setSeen($message, $mailbox);
+            } catch (\Exception $e_seen) {
+                $this->logError('Could not mark message as seen: '.$e_seen->getMessage());
+            }
             $this->logError(\Helper::formatException($e));
         }
     }
@@ -1230,7 +1278,7 @@ class FetchEmails extends Command
             $now = date('Y-m-d H:i:s');
         }
         $conv_cc = $cc;
-        //$prev_conv_cc = $conv_cc;
+        $prev_conv_cc = $conv_cc;
 
         // Customers are created before with email and name
         $customer = Customer::create($from);
@@ -1381,21 +1429,46 @@ class FetchEmails extends Command
             \Eventy::action('conversation.customer_replied', $conversation, $thread, $customer);
         }
 
-        // Conversation customer changed
-        if ($prev_customer_id) {
-            event(new ConversationCustomerChanged($conversation, $prev_customer_id, $prev_customer_email, null, $customer));
-        }
-
-        // Returning original customer is disabled for better security:
+        // Simply returning original customer is disabled for better security:
         // https://github.com/freescout-help-desk/freescout/security/advisories/GHSA-j49f-9g94-3wh4
-        // 
-        // Return original customer back.
-        /*if ($prev_customer_id) {
-            $conversation->customer_id = $prev_customer_id;
-            $conversation->customer_email = $prev_customer_email;
-            $conversation->setCc(array_merge($prev_conv_cc, array_diff($to, $mailbox->getEmails())));
-            $conversation->save();
-        }*/
+
+        // Change customer when reply to the conversation from a completely new email is received.
+        // Check From, To, Cc and Bcc in all previous threads.
+        if ($prev_customer_id) {
+            $change_customer = true;
+
+            $prev_threads = Thread::select(['id', 'from', 'to', 'cc', 'bcc'])
+                ->where('conversation_id', $conversation->id)
+                ->whereIn('type', [Thread::TYPE_CUSTOMER, Thread::TYPE_MESSAGE])
+                ->get();
+
+            foreach ($prev_threads as $prev_thread) {
+                if ($prev_thread->id == $thread->id) {
+                    continue;
+                }
+
+                // Sender has been already mentioned in the conversation -
+                // no need to change the customer.
+                if ($prev_thread->from == $from
+                    || in_array($from, $prev_thread->getTo())
+                    || in_array($from, $prev_thread->getCc())
+                    || in_array($from, $prev_thread->getBcc())
+                ) {
+                    $change_customer = false;
+                    break;
+                }
+            }
+
+            if ($change_customer) {
+                event(new ConversationCustomerChanged($conversation, $prev_customer_id, $prev_customer_email, null, $customer));
+            } else {
+                // Return original customer back.
+                $conversation->customer_id = $prev_customer_id;
+                $conversation->customer_email = $prev_customer_email;
+                $conversation->setCc(array_merge($prev_conv_cc, array_diff($to, $mailbox->getEmails())));
+                $conversation->save();
+            }
+        }
 
         return $thread;
     }
@@ -1554,6 +1627,39 @@ class FetchEmails extends Command
         return $created_attachments;
     }
 
+    /**
+     * Remove inline images which are referenced (by cid) only in the quoted part
+     * of the email, i.e. in the part which has been cut off by separateReply().
+     * Otherwise such images become orphaned attachments of the thread.
+     *
+     * @param mixed  $attachments
+     * @param string $full_body   Body before separateReply().
+     * @param string $reply_body  Body after separateReply().
+     *
+     * @return array
+     */
+    public function removeQuotedInlineAttachments($attachments, $full_body, $reply_body)
+    {
+        $result = [];
+
+        foreach ($attachments as $attachment) {
+            $cid = trim((string)($attachment->id ?? ''), '<> ');
+
+            if ($cid !== ''
+                && stripos((string)($attachment->content_type ?? ''), 'image/') === 0
+                && stripos($full_body, 'cid:'.$cid) !== false
+                && stripos($reply_body, 'cid:'.$cid) === false
+            ) {
+                // Referenced only in the quoted text.
+                continue;
+            }
+
+            $result[] = $attachment;
+        }
+
+        return $result;
+    }
+
     public function processAttachmentName($name)
     {
         // Fix for Webklex/laravel-imap.
@@ -1592,8 +1698,12 @@ class FetchEmails extends Command
         $body = \Eventy::filter('fetch_emails.separate_reply.preprocess_body', $body ?? '');
 
         if ($is_html) {
+            // Remove Outlook "downlevel-revealed" conditional comments (<![if !vml]>...<![endif]>),
+            // preserving the data inside. Otherwise DOMDocument turns them into escaped text.
+            $body = preg_replace('/<!\[(?:if\s[^\]]*|endif)\]>/i', '', $body) ?: $body;
+
             // Extract body content from HTML
-            
+
             // Proton has it's own unique way of placing replies:
             // https://github.com/freescout-help-desk/freescout/issues/4537#issuecomment-2629836738
             if ($is_reply
@@ -1764,6 +1874,8 @@ class FetchEmails extends Command
             }
         }
 
+        // New message contains only embedded attachents -
+        // reset has_attachments flag for the conversation.
         if ($only_embedded_attachments 
             && $conversation 
             && $conversation->has_attachments
@@ -1829,6 +1941,18 @@ class FetchEmails extends Command
         return $attr;
     }
 
+    /**
+     * The same email may be fetched with different header sets (a copy from the Sent folder has only
+     * the minimal headers), so a different headers string alone does not make it a new email.
+     * It is new only if the Date differs too.
+     */
+    public static function isNewEmailWithSameMessageId($existing_headers, $new_headers)
+    {
+        return $existing_headers != $new_headers
+            && trim(\MailHelper::getHeader($existing_headers, 'Date'))
+                != trim(\MailHelper::getHeader($new_headers, 'Date'));
+    }
+
     public function headerToStr($header)
     {
         if (!is_string($header)) {
@@ -1886,6 +2010,14 @@ class FetchEmails extends Command
             }
             Customer::create($item->mail, $data);
         }
+    }
+
+    /**
+     * Check if the error means that the IMAP stream has timed out or was closed.
+     */
+    public function isStreamTimeout($error)
+    {
+        return is_string($error) && stripos($error, 'no response') !== false;
     }
 
     public function setSeen($message, $mailbox)

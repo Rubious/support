@@ -65,6 +65,21 @@ class Helper
     public static $datepicker_included = false;
 
     /**
+     * Cache isConsole() result.
+     */
+    public static $is_console = null;
+
+    /**
+     * Memory cache used in non-console and non-background mode.
+     */
+    public static $memory_cache = [];
+
+    /**
+     * Holds last request data.
+     */
+    public static $last_request = [];
+
+    /**
      * Files with such extensions are being renamed on upload.
      */
     public static $restricted_extensions = [
@@ -644,9 +659,7 @@ class Helper
                 continue;
             }
             if (is_array($data[$field])) {
-                foreach ($data[$field] as $sub_field => $sub_data) {
-                    $data[$field][$sub_field] = self::stripTagsFromArray($sub_data);
-                }
+                $data[$field] = self::stripTagsFromArray($data[$field], $fields);
             } else {
                 if ($data[$field] !== null) {
                     $data[$field] = \Helper::stripTags($data[$field]);
@@ -939,14 +952,15 @@ class Helper
         return $dest_path;
     }
 
+    // Preserved for backward compatibility only.
     public static function getPrivateStorage()
     {
-        return \Storage::disk('private');
+        return \Storage::disk('local_app');
     }
 
     public static function getPublicStorage()
     {
-        return \Storage::disk('public');
+        return \Storage::disk('local');
     }
 
     public static function formatException($e)
@@ -980,32 +994,41 @@ class Helper
     /**
      * Download remote file and save as file.
      */
-    public static function downloadRemoteFile($url, $destinationFilePath)
+    public static function downloadRemoteFile($url, $file_path)
     {
-        // Sanitize URL.
-        try {
-            if (!self::sanitizeRemoteUrl($url)) {
-                throw new \Exception('URL points to the local host', 1);
-            }
-        } catch (\Exception $e) {
-            \Helper::logException($e, 'Error downloading a remote file ('.$url.'): ');
+        // getRemoteFileContents() sanitizes remote URL.
+        $contents = self::getRemoteFileContents($url);
+
+        if (!$contents) {
+            \Log::error('Error downloading a remote file ('.$url.'): empty response');
             return false;
         }
 
-        $client = new \GuzzleHttp\Client();
-
-        try {
-            $client->request('GET', $url, \Helper::setGuzzleDefaultOptions([
-                'sink' => $destinationFilePath,
-                'timeout' => 300, // seconds
-                'connect_timeout' => 7,
-            ]));
-        } catch (\Exception $e) {
-            self::logException($e);
-            return false;
+        if (self::isAbasolutePath($file_path)) {
+            // Absolute path.
+            \File::put($file_path, $contents);
+        } else {
+            // Relative path: store in "storage".
+            \Storage::put($file_path, $contents);
         }
 
         return true;
+    }
+
+   /**
+     * symfony/filesystem package is not installed,
+     * so the logic of Symfony\Component\Filesystem\Filesystem::isAbsolutePath() is used here.
+     */
+    public static function isAbasolutePath($path)
+    {
+        $path = (string)$path;
+
+        return strspn($path, '/\\', 0, 1)
+            || (strlen($path) > 3 && ctype_alpha($path[0])
+                && ':' === $path[1]
+                && strspn($path, '/\\', 2, 1)
+            )
+            || null !== parse_url($path, PHP_URL_SCHEME);
     }
 
     /**
@@ -1617,8 +1640,24 @@ class Helper
      */
     public static function checkPort($host, $port)
     {
-        // Sanitize URL.
-        self::sanitizeRemoteUrl('https://'.$host, true);
+        // Sanitize URL and get host IP.
+        self::sanitizeRemoteUrl('https://'.$host, $throw_exception = true);
+
+        // Connect to the address that was actually validated above, not to
+        // the original hostname (which fsockopen() would otherwise resolve
+        // again on its own, at a different point in time).
+        $ips = array_first(self::$last_request['ips'] ?? []);
+
+        $host = array_first($ips);
+        if (!$host) {
+            // Could not determine host IP.
+            return false;
+        }
+
+        // fsockopen() requires IPv6 literals to be wrapped in brackets.
+        if (strpos($host, ':') !== false && strpos($host, '[') === false) {
+            $host = '['.$host.']';
+        }
 
         $connection = @fsockopen($host, $port);
         if (is_resource($connection)) {
@@ -1766,6 +1805,26 @@ class Helper
         return (int)$request->cookie('in_app');
     }
 
+    public static function isAndroid($request = null)
+    {
+        if (!$request) {
+            $request = app('request');
+        }
+        return stripos($request->server('HTTP_USER_AGENT') ?? '', 'Android') !== false;
+    }
+
+    /**
+     * Customers list view mode: cards (default) or table.
+     * The cookie is set from JS (see setCustomersView() in main.js).
+     */
+    public static function getCustomersView($request = null)
+    {
+        if (!$request) {
+            $request = app('request');
+        }
+        return $request->cookie('customers_view') == 'table' ? 'table' : 'cards';
+    }
+
     /**
      * Get identifier for queue:work
      */
@@ -1835,22 +1894,22 @@ class Helper
 
         $file->storeAs('uploads', $file_name);
 
-        self::sanitizeUploadedFileData('uploads'.DIRECTORY_SEPARATOR.$file_name, self::getPublicStorage());
+        self::sanitizeUploadedFileData('uploads'.DIRECTORY_SEPARATOR.$file_name);
 
         return self::uploadedFilePath($file_name);
     }
 
-    public static function sanitizeUploadedFileData($file_path, $storage, $content = null)
+    public static function sanitizeUploadedFileData($file_path, $content = null)
     {
         // Remove <script>, href="", iframe, etc from SVG files.
         // Any image can be interpreted as SVG by browser,
         // so checking extension is not enough.
-        if ($storage->exists($file_path)
-            && ($storage->mimeType($file_path) == 'image/svg+xml' 
+        if (Storage::exists($file_path)
+            && (Storage::mimeType($file_path) == 'image/svg+xml'
                 || strtolower(pathinfo($file_path, PATHINFO_EXTENSION)) == 'svg')
         ) {
             if (!$content) {
-                $content = $storage->get($file_path);
+                $content = Storage::get($file_path);
             }
             if ($content) {
                 // Remove comments from SVG content.
@@ -1863,7 +1922,7 @@ class Helper
                 if (!$clean_content)  {
                     $clean_content = preg_replace('#<script(.*?)>(.*?)</script>#is', '', $content);
                 }
-                $storage->put($file_path, $clean_content);
+                Storage::put($file_path, $clean_content);
             }
         }
     }
@@ -1929,6 +1988,7 @@ class Helper
         return \DB::connection()->getPDO()->getAttribute(\PDO::ATTR_DRIVER_NAME) == 'pgsql';
     }
 
+    // Case insensitive LIKE for MySQL/MariaDB and PostgreSQL.
     public static function sqlLikeOperator()
     {
         return self::isPgSql() ? 'ilike' : 'like';
@@ -1971,6 +2031,11 @@ class Helper
         return (bool)app('request')->input('print');
     }
 
+    public static function isConvListVisible()
+    {
+        return (int)request()->cookie('conv_col');
+    }
+
     public static function isDev()
     {
         return config('app.env') != 'production';
@@ -2001,10 +2066,7 @@ class Helper
     public static function downloadRemoteFileAsTmp($uri, $follow_redirects = true)
     {
         try {
-            // Sanitize URL first.
-            if (!self::sanitizeRemoteUrl($uri)) {
-                throw new \Exception('URL points to the local host', 1);
-            }
+            // getRemoteFileContents() sanitizes remote URL.
             $contents = self::getRemoteFileContents($uri, $follow_redirects);
 
             if (!$contents) {
@@ -2031,17 +2093,19 @@ class Helper
     {
         try {
             // Sanitize URL first.
-            if (!self::sanitizeRemoteUrl($url)) {
-                throw new \Exception('URL points to the local host', 1);
+            $url = self::sanitizeRemoteUrl($url);
+            if (!$url) {
+                throw new \Exception('[Helper::getRemoteFileContents()] URL points to the local host', 1);
             }
 
+            // Quick check for response code 200 or redierct.
             $headers = get_headers($url);
-
             // 307 - Temporary Redirect.
             if (!preg_match("/(200|301|302|307)/", $headers[0])) {
                 throw new \Exception('HTTP Status Code: '.$headers[0], 1);
-                //return false;
             }
+
+            // Get contents.
 
             $ch = curl_init();
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
@@ -2052,7 +2116,9 @@ class Helper
             curl_setopt($ch, CURLOPT_URL, $url);
             \Helper::setCurlDefaultOptions($ch);
             curl_setopt($ch, CURLOPT_TIMEOUT, 180);
-            $contents = curl_exec($ch);
+
+            //$contents = curl_exec($ch);
+            $contents = self::curlExec($url, $ch);
 
             $curl_errno = curl_errno($ch);
 
@@ -2081,31 +2147,51 @@ class Helper
         }
     }
 
-    public static function sanitizeRemoteUrl($url, $throw_exception = false, $follow_redirects = true)
+    public static function sanitizeRemoteUrl($url, $throw_exception = false, $follow_redirects = true, $ch = null)
     {
-        if (!self::checkUrlIpAndHost($url, $throw_exception)) {
+        self::$last_request = [
+            'ips' => [],
+            'response' => '',
+            'last_url' => '',
+        ];
+
+        if (!self::checkUrlHost($url, $throw_exception)) {
             return '';
         }
 
         // Follow redirects and check all IPs/hosts.
         if ($follow_redirects) {
             for ($i = 0; $i < 20; $i++) { 
-                $redirected_url = self::curlGetNextRedirectedUrl($url);
-
+                $redirected_url = self::curlGetNextRedirect($url, false, $ch);
                 if ($redirected_url == $url || !$redirected_url) {
                     break;
                 }
 
                 if ($redirected_url != $url) {
-                    if (!self::checkUrlIpAndHost($redirected_url, $throw_exception)) {
+                    if (!self::checkUrlHost($redirected_url, $throw_exception)) {
                         return '';
                     }
                 }
                 $url = $redirected_url;
             }
         }
-
         return $url;
+    }
+
+    // Safe curl exec checking hosts and IPs against SSRF.
+    public static function curlExec($url, $ch, $throw_exception = false)
+    {
+        // Sanitize URL and get response.
+        $last_url = self::sanitizeRemoteUrl($url, $throw_exception, $follow_redirects = true, $ch);
+
+        self::$last_request['last_url'] = $last_url;
+
+        $response = self::$last_request['response'] ?? '';
+
+        // Clean memory.
+        unset(self::$last_request['response']);
+
+        return $response;
     }
 
     /**
@@ -2115,7 +2201,7 @@ class Helper
      * 
      * Returns URL if host can not be extracted.
      */
-    public static function checkUrlIpAndHost($url, $throw_exception = false)
+    public static function checkUrlHost($url, $throw_exception = false)
     {
         $url = self::normalizeIPv6InUrl($url ?? '');
 
@@ -2166,6 +2252,8 @@ class Helper
             $hosts_to_check[] = $host_hex_to_ip;
         }
 
+        self::$last_request['ips'][$host] = [];
+
         // Check only if host name is passed in URL.
         if (!self::isValidIp($host)) {
 
@@ -2173,6 +2261,10 @@ class Helper
             $remote_host_ip = gethostbyname($host);
             if ($remote_host_ip && !in_array($remote_host_ip, $hosts_to_check)) {
                 $hosts_to_check[] = $remote_host_ip;
+                // Remember IP.
+                if (!in_array($remote_host_ip, self::$last_request['ips'])) {
+                    self::$last_request['ips'][$host][] = $remote_host_ip;
+                }
             }
 
             // Resolve DNS records.
@@ -2186,12 +2278,24 @@ class Helper
                 foreach ($dns_records as $dns_record) {
                     if (!empty($dns_record['ip']) && !in_array($dns_record['ip'], $hosts_to_check)) {
                         $hosts_to_check[] = $dns_record['ip'];
+                        // Remember IP.
+                        if (!in_array($dns_record['ip'], self::$last_request['ips'])) {
+                            self::$last_request['ips'][$host][] = $dns_record['ip'];
+                        }
                     }
                     if (!empty($dns_record['ipv6']) && !in_array($dns_record['ipv6'], $hosts_to_check)) {
                         $hosts_to_check[] = $dns_record['ipv6'];
+                        // Remember IP.
+                        if (!in_array($dns_record['ipv6'], self::$last_request['ips'])) {
+                            self::$last_request['ips'][$host][] = $dns_record['ipv6'];
+                        }
                     }
                 }
             }
+        } else {
+            // $host contains IP.
+            // Remember IP.
+            self::$last_request['ips'][$host][] = $host;
         }
 
         foreach ($hosts_to_check as $host_item) {
@@ -2202,6 +2306,10 @@ class Helper
                     return '';
                 }
             }
+        }
+
+        if (empty(self::$last_request['ips'][$host])) {
+            self::$last_request['ips'][$host][] = $host;
         }
 
         return $url;
@@ -2274,25 +2382,36 @@ class Helper
             return $url;
         }
 
+        // Skip host with port (http://127.0.0.1:7700)
+        if (preg_match('/^https?:\/\/[^\/?#:]+:\d+([\/?#]|$)/', $url)) {
+            return $url;
+        }
+
         $pattern = '/^(https?:\/\/)([^\/?#]+:[^\/?#]+)([\/?#]+|$)/';
 
         return preg_replace($pattern, '$1[$2]$3', $url);
     }
 
-    // Get next redicred URL.
-    public static function curlGetNextRedirectedUrl($url, $throw_exception = false)
+    // Get next redicred URL and response body.
+    public static function curlGetNextRedirect($url, $throw_exception = false, $ch = null)
     {
-        $ch = curl_init();
+        $close_handle = false;
+
+        if (!$ch) {
+            $ch = curl_init();
+            \Helper::setCurlDefaultOptions($ch);
+            $close_handle = true;
+        } else {
+            //curl_setopt($ch, CURLOPT_TIMEOUT, 180);
+        }
 
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 0);
         //curl_setopt($ch, CURLOPT_MAXREDIRS, 1);
         curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
         curl_setopt($ch, CURLOPT_HEADER, 1);
-
         curl_setopt($ch, CURLOPT_URL, $url);
-        \Helper::setCurlDefaultOptions($ch);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 180);
+
         //curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
         $response = curl_exec($ch);
 
@@ -2302,6 +2421,10 @@ class Helper
 
         //if ($curl_errno && $curl_errno != CURLE_TOO_MANY_REDIRECTS && !$redirected_url) {
         if ($curl_errno) {
+            // Could not connect to host.
+            // if ($curl_errno == CURLE_COULDNT_CONNECT) {
+            //     return $url;
+            // }
             if ($throw_exception) {
                 throw new \Exception('Could not check URL contents by following redirects: '.$curl_errno, 1);
             } else {
@@ -2324,8 +2447,13 @@ class Helper
         }
         //}
 
-        if (PHP_VERSION_ID < 80000) {
+        if ($close_handle && PHP_VERSION_ID < 80000) {
             \curl_close($ch);
+        }
+
+        // Remember response body.
+        if ($ch) {
+            self::$last_request['response'] = (string)substr($response ?? '', $header_size);
         }
 
         return $redirected_url;
@@ -2796,7 +2924,11 @@ class Helper
 
     public static function isConsole()
     {
-        return app()->runningInConsole();
+        if (self::$is_console === null) {
+            self::$is_console = app()->runningInConsole();
+        }
+
+        return self::$is_console;
     }
 
     public static function isCron()
@@ -2828,7 +2960,7 @@ class Helper
         if (\Option::get('send_emails_problem')) {
             $flashes[] = [
                 'type'      => 'warning',
-                'text'      => __('There is a problem processing outgoing mail queue — an admin should check :%a_begin%System Status:%a_end% and :%a_begin_recommendations%Recommendations:%a_end%', ['%a_begin%' => '<a href="'.route('system').'#cron" target="_blank">', '%a_end%' => '</a>', /*'%a_begin_logs%' => '<a href="'.route('logs', ['name' => 'send_errors']).'#cron" target="_blank">',*/ '%a_begin_recommendations%' => '<a href="'.config('app.freescout_repo').'/wiki/Background-Jobs" target="_blank">']),
+                'text'      => __('There is a problem processing outgoing mail queue — an admin should check :%a_begin%System Status:%a_end% and :%a_begin_recommendations%Recommendations:%a_end%', ['%a_begin%' => '<a href="'.route('system').'#cron">', '%a_end%' => '</a>', /*'%a_begin_logs%' => '<a href="'.route('logs', ['name' => 'send_errors']).'#cron" target="_blank">',*/ '%a_begin_recommendations%' => '<a href="'.config('app.freescout_repo').'/wiki/Background-Jobs">']),
                 'unescaped' => true,
             ];
         }
@@ -3228,6 +3360,38 @@ class Helper
             }
         } catch (\Exception $e) {
             // Do nothing.
+        }
+    }
+
+    public static function memoryCacheEnabled()
+    {
+        return !self::isConsole();
+    }
+
+    // "key" may use "dot" notation: conversation.id
+    public static function memoryCacheGet($key)
+    {
+        if (!\Helper::memoryCacheEnabled()) {
+            return null;
+        }
+        return array_get(self::$memory_cache, $key);
+    }
+
+    // "key" may use "dot" notation: conversation.id
+    public static function memoryCachePut($key, $value)
+    {
+        if (!\Helper::memoryCacheEnabled()) {
+            return false;
+        }
+        array_set(self::$memory_cache, $key, $value);
+    }
+
+    public static function isLocalStorage($disk = '')
+    {
+        if ($disk) {
+            return \Storage::disk($disk)->getDriver()->getAdapter() instanceof \League\Flysystem\Adapter\Local;
+        } else {
+            return config('filesystems.default') == 'local';
         }
     }
 }

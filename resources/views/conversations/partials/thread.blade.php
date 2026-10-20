@@ -12,7 +12,7 @@
             @action('thread.after_header', $thread, $loop, $threads, $conversation, $mailbox)
         </div>
         <div class="dropdown thread-options">
-            <span class="dropdown-toggle {{--glyphicon glyphicon-option-vertical--}}" data-toggle="dropdown" role="button" aria-expanded="false" aria-haspopup="true"><b class="caret"></b></span>
+            <span class="dropdown-toggle {{--glyphicon glyphicon-option-vertical--}}" data-toggle="dropdown" role="button" @if (Auth::user()->isAdmin())tabindex="0" @endif aria-expanded="false" aria-haspopup="true"><b class="caret"></b></span>
             @if (Auth::user()->isAdmin())
                 <ul class="dropdown-menu dropdown-menu-right" role="menu">
                     @action('thread.menu', $thread)
@@ -313,7 +313,7 @@
             </div>
         </div>
         <div class="dropdown thread-options">
-            <span class="dropdown-toggle {{--glyphicon glyphicon-option-vertical--}}" data-toggle="dropdown" role="button" aria-expanded="false" aria-haspopup="true"><b class="caret"></b></span>
+            <span class="dropdown-toggle {{--glyphicon glyphicon-option-vertical--}}" data-toggle="dropdown" role="button" tabindex="0" aria-expanded="false" aria-haspopup="true"><b class="caret"></b></span>
             <ul class="dropdown-menu dropdown-menu-right" role="menu">
                 @if (Auth::user()->can('edit', $thread))
                     <li><a href="#" title="" class="thread-edit-trigger" role="button">{{ __("Edit") }}</a></li>
@@ -323,7 +323,7 @@
                 @endif
                 <li><a href="{{ route('conversations.create', ['mailbox_id' => $mailbox->id]) }}?from_thread_id={{ $thread->id }}" title="{{ __("Start a conversation from this thread") }}" class="new-conv" role="button">{{ __("New Conversation") }}</a></li>
                 @if ($thread->isCustomerMessage())
-                    <li><a href="{{ route('conversations.clone_conversation', ['mailbox_id' => $mailbox->id, 'from_thread_id' => $thread->id]) }}" title="{{ __("Clone a conversation from this thread") }}" class="new-conv" role="button">{{ __("Clone Conversation") }}</a></li>
+                    <li><a href="{{ route('conversations.clone_conversation', ['mailbox_id' => $mailbox->id, 'from_thread_id' => $thread->id, 'token' => csrf_token()]) }}" title="{{ __("Clone a conversation from this thread") }}" class="new-conv" role="button">{{ __("Clone Conversation") }}</a></li>
                 @endif
                 @action('thread.menu', $thread)
                 @if (Auth::user()->isAdmin())

@@ -204,6 +204,11 @@ class Conversation extends Model
     const DEFAULT_LIST_SIZE = 50;
 
     /**
+     * Default size of the conversations list.
+     */
+    const CONV_LIST_SIZE = 15;
+
+    /**
      * Default size of the chats list.
      */
     const CHATS_LIST_SIZE = 50;
@@ -883,7 +888,7 @@ class Conversation extends Model
         }
         //$query = self::where('folder_id', $folder->id)->where('id', '<>', $this->id);
         $query = self::getQueryByFolder($folder, \Auth::id())
-            ->where('id', '<>', $this->id);
+            ->where('conversations.id', '<>', $this->id);
 
         $query = \Eventy::filter('conversation.get_nearby_query', $query, $this, $mode, $folder);
 
@@ -1955,52 +1960,74 @@ class Conversation extends Model
 
     /**
      * Get information on viewers for conversation table.
+     * Returns users in "users" key with the current user excluded: replying users first, then viewing users.
      */
     public static function getViewersInfo($conversations, $fields = ['id', 'first_name', 'last_name'], $exclude_user_ids = [])
     {
         $viewers_cache = \Cache::get('conv_view');
         $viewers = [];
         $user_ids = [];
+        // Skip stale records not yet removed by freescout:check-conv-viewers.
+        // Dates have 'Y-m-d H:i:s' format, so they can be compared as strings.
+        // https://github.com/freescout-help-desk/freescout/pull/5670
+        $min_date = \Carbon\Carbon::now()->subSeconds(30)->toDateTimeString();
         foreach ($conversations as $conversation) {
-            $first_user_id = null;
-            if (!empty($viewers_cache[$conversation->id])) {
-                // Get replying viewers
-                foreach ($viewers_cache[$conversation->id] as $user_id => $viewer) {
-                    if (!$first_user_id) {
-                        $first_user_id = $user_id;
-                    }
-                    if (!empty($viewer['r']) && !in_array($user_id, $exclude_user_ids)) {
-                        $viewers[$conversation->id] = [
-                            'user'     => null,
-                            'user_id'  => $user_id,
-                            'replying' => true,
-                        ];
-                        $user_ids[] = $user_id;
-                        break;
-                    }
+            if (empty($viewers_cache[$conversation->id]) || !is_array($viewers_cache[$conversation->id])) {
+                continue;
+            }
+            $replying = [];
+            $viewing = [];
+            foreach ($viewers_cache[$conversation->id] as $user_id => $viewer) {
+                if (in_array($user_id, $exclude_user_ids)
+                    || empty($viewer['t'])
+                    || $viewer['t'] < $min_date
+                ) {
+                    continue;
                 }
-                // Get first non-replying viewer
-                if (empty($viewers[$conversation->id]) && !in_array($user_id, $exclude_user_ids)) {
-                    $viewers[$conversation->id] = [
-                        'user'     => null,
-                        'user_id'  => $first_user_id,
-                        'replying' => false,
-                    ];
-                    $user_ids[] = $first_user_id;
+                $item = [
+                    'user'     => null,
+                    'user_id'  => $user_id,
+                    'replying' => !empty($viewer['r']),
+                ];
+                if ($item['replying']) {
+                    $replying[] = $item;
+                } else {
+                    $viewing[] = $item;
                 }
+                $user_ids[] = $user_id;
+            }
+            // Replying viewers go first.
+            $list = array_merge($replying, $viewing);
+            if ($list) {
+                // First viewer is kept on the top level for backward compatibility.
+                $viewers[$conversation->id] = $list[0];
+                $viewers[$conversation->id]['users'] = $list;
             }
         }
         // Get all viewing users in one query
         if ($user_ids) {
             $user_ids = array_unique($user_ids);
-            $users = User::select($fields)->whereIn('id', $user_ids)->get();
+            $users = User::select($fields)->whereIn('id', $user_ids)->get()->keyBy('id');
 
-            foreach ($viewers as $i => $viewer) {
-                foreach ($users as $user) {
-                    if ($user->id == $viewer['user_id']) {
-                        $viewers[$i]['user'] = $user;
+            foreach ($viewers as $conversation_id => $viewer) {
+                foreach ($viewer['users'] as $i => $item) {
+                    if (!empty($users[$item['user_id']])) {
+                        $viewers[$conversation_id]['users'][$i]['user'] = $users[$item['user_id']];
+                    } else {
+                        // User not found in DB.
+                        unset($viewers[$conversation_id]['users'][$i]);
                     }
                 }
+                // Remove not found users.
+                $viewers[$conversation_id]['users'] = array_values($viewers[$conversation_id]['users']);
+                if (!$viewers[$conversation_id]['users']) {
+                    unset($viewers[$conversation_id]);
+                    continue;
+                }
+                $first_user = $viewers[$conversation_id]['users'][0];
+                $viewers[$conversation_id]['user'] = $first_user['user'];
+                $viewers[$conversation_id]['user_id'] = $first_user['user_id'];
+                $viewers[$conversation_id]['replying'] = $first_user['replying'];
             }
         }
         return $viewers;
@@ -2301,12 +2328,20 @@ class Conversation extends Model
                     $new_attachment->save();
 
                     try {
-                        $attachment_file = new \Illuminate\Http\UploadedFile(
-                            $attachment->getLocalFilePath(), $attachment->file_name,
-                            null, null, true
-                        );
+                        $content_stream = '';
+                        $attachment_file = null;
 
-                        $file_info = Attachment::saveFileToDisk($new_attachment, $new_attachment->file_name, '', $attachment_file);
+                        if (\Helper::isLocalStorage()) {
+                            $attachment_file = new \Illuminate\Http\UploadedFile(
+                                $attachment->getLocalFilePath(), $attachment->file_name,
+                                null, null, true
+                            );
+                        } else {
+                            // File in remote storage.
+                            $content_stream = $attachment->getFileStream();
+                        }
+
+                        $file_info = Attachment::saveFileToDisk($new_attachment, $new_attachment->file_name, $content_stream, $attachment_file);
 
                         if (!empty($file_info['file_dir'])) {
                             $new_attachment->file_dir = $file_info['file_dir'];
@@ -2480,8 +2515,11 @@ class Conversation extends Model
     public static function refreshConversations($conversation, $thread)
     {
         \App\Events\RealtimeConvNewThread::dispatchSelf($thread);
-        \App\Events\RealtimeMailboxNewThread::dispatchSelf($conversation->mailbox_id, $thread->id, (int)$conversation->isChat());
+        \App\Events\RealtimeMailboxNewThread::dispatchSelf($conversation->mailbox_id, $thread->id, (int)$conversation->isChat(), $thread->state);
+        // Alerts about new conversations in a mailbox.
         \App\Events\RealtimeChat::dispatchSelf($conversation->mailbox_id, $thread->id, (int)$conversation->isChat());
+        // Alerts about new conversations in a folder.
+        \App\Events\RealtimeConvList::dispatchSelf($conversation->folder_id, $thread->id);
     }
 
     public static function getConvTableSorting($request = null)
@@ -2749,6 +2787,29 @@ class Conversation extends Model
         return $chats;
     }
 
+    // Get conversation list for Conversations column.
+    public static function getConvList($user, $folder, $offset = 0)
+    {
+        $query_conversations = Conversation::getQueryByFolder($folder, $user->id);
+        $folder->queryAddOrderBy($query_conversations);
+
+        // Check access.
+        if ($user->canSeeOnlyAssignedConversations()) {
+            $query_conversations->where('conversations.user_id', $user->id);
+        }
+        // Not using standard pagination allow to avoid extra count() SQL query.
+        $conversations = $query_conversations
+            ->offset($offset)
+            ->limit(Conversation::CONV_LIST_SIZE+1)
+            ->get();
+
+        if (count($conversations)) {
+            Conversation::loadCustomers($conversations);
+        }
+
+        return $conversations;
+    }
+
     public static function queryContainsStr($query_str, $substr)
     {
         $regex = preg_quote($substr);
@@ -2759,9 +2820,18 @@ class Conversation extends Model
 
     public function userHasAccessToMailbox($user_id)
     {
-        return MailboxUser::where('mailbox_id', $this->mailbox_id)
+        $has_access = \Helper::memoryCacheGet('mailbox_access.'.$this->mailbox_id.'_'.$user_id);
+        if (!is_null($has_access)) {
+            return $has_access;
+        }
+
+        $has_access = MailboxUser::where('mailbox_id', $this->mailbox_id)
             ->where('user_id', $user_id)
             ->exists();
+
+        \Helper::memoryCachePut('mailbox_access.'.$this->mailbox_id.'_'.$user_id, $has_access);
+
+        return $has_access;
     }
 
     public function chatShouldStartNew($mailbox = null)
@@ -2781,5 +2851,20 @@ class Conversation extends Model
     public function isAssignedToUser($user)
     {
         return \Eventy::filter('conversation.is_user_assignee', $this->user_id == $user->id, $this, $user->id);
+    }
+
+    // Check if conversation mailbox is archived using caching.
+    public function isMailboxArchived()
+    {
+        $is_archived = \Helper::memoryCacheGet('is_archived.'.$this->mailbox_id);
+        if (!is_null($is_archived)) {
+            return $is_archived;
+        }
+
+        $is_archived = $this->mailbox->isArchived();
+
+        \Helper::memoryCachePut('is_archived.'.$this->mailbox_id, $is_archived);
+
+        return $is_archived;
     }
 }

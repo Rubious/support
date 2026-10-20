@@ -43,6 +43,7 @@ return [
 
     'disks' => [
 
+        // /storage/app/public
         'local' => [
             'driver'     => 'local',
             'root'       => storage_path('app/public'),
@@ -50,15 +51,16 @@ return [
             'visibility' => 'public',
         ],
 
-        'public' => [
+        /*'public' => [
             'driver'     => 'local',
             'root'       => storage_path('app/public'),
             'url'        => env('APP_URL').'/storage',
             'visibility' => 'public',
-        ],
+        ],*/
 
-        // To store file in the storage/app folder
-        'private' => [
+        // To store files in the storage/app folder not available from browser:
+        // /storage/app
+        'local_app' => [
             'driver'     => 'local',
             'root'       => storage_path('app'),
             'url'        => env('APP_URL').'/storage',
@@ -71,6 +73,10 @@ return [
             'secret' => env('AWS_SECRET_ACCESS_KEY'),
             'region' => env('AWS_DEFAULT_REGION'),
             'bucket' => env('AWS_BUCKET'),
+            'endpoint' => env('AWS_ENDPOINT'),
+            'use_path_style_endpoint' => env('AWS_USE_PATH_STYLE_ENDPOINT', false),
+            // URL is used to form file URLs.
+            'url' => env('AWS_URL'),
         ],
 
     ],

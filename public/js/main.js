@@ -25,6 +25,8 @@ var fs_checkbox_shift_last_checked = null;
 var upload_in_progress = false;
 var audio_chat;
 var autoplay_msg_shown = false;
+// Remember recipients rendered by the server to restore them after discarding a draft.
+var fs_reply_recipients = null;
 
 var FS_STATUS_CLOSED = 3;
 
@@ -32,6 +34,7 @@ var FS_STATUS_CLOSED = 3;
 var poly;
 // List of funcions preparin data for polycast receive request
 var poly_data_closures = [];
+var conv_list_polling_set = false;
 
 var fs_select2_config = {
 	//containerCssClass: "select2-multi-container", // select2-with-loader
@@ -238,6 +241,108 @@ var EditorRemoveFormatButton = function (context) {
 	return button.render();   // return button as jquery object
 }
 
+function editorPlainTextPasteStorageKey()
+{
+	var user_id = getGlobalAttr('auth_user_id');
+
+	if (!user_id) {
+		return '';
+	}
+
+	return 'editor_plain_text_paste_'+user_id;
+}
+
+function editorPlainTextPasteEnabled()
+{
+	var key = editorPlainTextPasteStorageKey();
+
+	if (!key) {
+		return false;
+	}
+
+	return localStorageGet(key) == '1';
+}
+
+function editorPlainTextPasteSet(enabled)
+{
+	var key = editorPlainTextPasteStorageKey();
+
+	if (!key) {
+		return;
+	}
+
+	if (enabled) {
+		localStorageSet(key, '1');
+	} else {
+		localStorageRemove(key);
+	}
+}
+
+var EditorRemoveFormatPasteButton = function (context) {
+	if (convIsChat()) {
+		return EditorRemoveFormatButton(context);
+	}
+
+	var ui = $.summernote.ui;
+	var plain_text_enabled = editorPlainTextPasteEnabled();
+
+	var button = ui.buttonGroup({
+		className: 'note-remove-format',
+	    children: [
+			ui.button({
+				className: 'note-remove-format-btn',
+				contents: '<i class="note-icon-close"></i>',
+				tooltip: Lang.get("messages.remove_format"),
+				container: 'body',
+				click: function () {
+					context.invoke('removeFormat');
+				}
+			}),
+			ui.button({
+				className: 'dropdown-toggle',
+				contents: '<span class="note-icon-caret"></span>',
+				tooltip: Lang.get("messages.paste_as_plain_text"),
+				container: 'body',
+				data: {
+					toggle: 'dropdown'
+				}
+			}),
+			ui.dropdown([
+				ui.button({
+					className: 'editor-plain-text-paste-toggle',
+					contents: '<span class="editor-plain-text-paste-state">'+(plain_text_enabled ? '&#9745;' : '&#9744;')+'</span> '+htmlEscape(Lang.get("messages.paste_as_plain_text")),
+					click: function (e) {
+						var enabled = !editorPlainTextPasteEnabled();
+						editorPlainTextPasteSet(enabled);
+						$(e.currentTarget).find('.editor-plain-text-paste-state:first').html(enabled ? '&#9745;' : '&#9744;');
+					}
+				})
+			])
+		]
+	});
+
+	return button.render();
+}
+
+function editorConversationToolbar(toolbar)
+{
+	var result = [];
+
+	for (var group_i = 0; group_i < toolbar.length; group_i++) {
+		var buttons = toolbar[group_i][1].slice(0);
+
+		for (var button_i = 0; button_i < buttons.length; button_i++) {
+			if (buttons[button_i] == 'removeformat') {
+				buttons[button_i] = 'removeformatpaste';
+			}
+		}
+
+		result.push([toolbar[group_i][0], buttons]);
+	}
+
+	return result;
+}
+
 var EditorListsButton = function (context) {
 	var ui = $.summernote.ui;
 
@@ -317,6 +422,19 @@ $(document).ready(function(){
 	$('#logout-link').click(function(e) {
 		$('#logout-form').submit();
 		e.preventDefault();
+	});
+
+	// Icons acting as buttons (role="button" on span/i): Enter and Space click them, like a real button.
+	// Space on a dropdown toggle is left to Bootstrap, which already opens it.
+	$(document).on('keydown', 'span[role="button"][tabindex], i[role="button"][tabindex]', function(e) {
+		if ((e.which != 13 && e.which != 32) || (e.originalEvent && e.originalEvent.repeat)) {
+			return;
+		}
+		if (e.which == 32 && $(this).is('[data-toggle="dropdown"]')) {
+			return;
+		}
+		e.preventDefault();
+		$(this).click();
 	});
 
 	//applyVoidLinks();
@@ -1035,10 +1153,19 @@ function showFloatingAlert(type, msg, no_autohide)
 	}
 
 	var html = '<div class="alert alert-'+alert_class+' alert-floating">'+
-        '<div><i class="glyphicon glyphicon-'+icon+'"></i>'+htmlEscape(msg)+'</div>'+
+        '<div><i class="glyphicon glyphicon-'+icon+'"></i>'+processMarkup(htmlEscape(msg))+'</div>'+
         '</div>';
     $('body:first').append(html);
     fsFloatingAlertsInit();
+}
+
+function processMarkup(text)
+{
+	return text
+		// Links: [Example](https://example.org)
+		.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+		// New lines to <br><br>
+		.replace(/\r?\n/g, '<br><br>');
 }
 
 function initConversation()
@@ -1361,8 +1488,9 @@ function initConversation()
 		starConversationInit();
 		maybeShowStoredNote();
 		maybeShowDraft();
-		processLinks();
+		//processLinks();
 		initConvSettings();
+		initConvCol();
 
 		// Show reply form in chat mode
 		if (is_chat_mode && !$('.conv-action.inactive:first').length) {
@@ -1765,6 +1893,7 @@ function convEditorInit()
 	    savedraft: EditorSaveDraftButton,
 	    discard: EditorDiscardButton,
 	    removeformat: EditorRemoveFormatButton,
+	    removeformatpaste: EditorRemoveFormatPasteButton,
 	    lists: EditorListsButton
 	});
 
@@ -1775,7 +1904,7 @@ function convEditorInit()
 		dialogsFade: true,
 		disableResizeEditor: true,
 		followingToolbar: false,
-		toolbar: fsApplyFilter('conversation.editor_toolbar', fs_conv_editor_toolbar),
+		toolbar: editorConversationToolbar(fsApplyFilter('conversation.editor_toolbar', fs_conv_editor_toolbar)),
 		buttons: fs_conv_editor_buttons,
 		// Disable inserting HR tag.
 		// https://github.com/freescout-help-desk/freescout/issues/4909
@@ -1811,14 +1940,15 @@ function convEditorInit()
 	    }
 	};
 
-	// Allow to insert only plain text in chats
-	if (convIsChat()) {
-		options.callbacks.onPaste = function (e) {
-	        var bufferText = ((e.originalEvent || e).clipboardData || window.clipboardData).getData('Text');
-	        e.preventDefault();
-	        document.execCommand('insertText', false, bufferText);
-	    };
-	}
+	// Allow plain-text paste in chats and when enabled by the user.
+	options.callbacks.onPaste = function (e) {
+		if (!convIsChat() && !editorPlainTextPasteEnabled()) {
+			return;
+		}
+		var bufferText = ((e.originalEvent || e).clipboardData || window.clipboardData).getData('Text');
+		e.preventDefault();
+		document.execCommand('insertText', false, bufferText);
+	};
 
 	options = fsApplyFilter('editor.options', options);
 
@@ -2220,6 +2350,8 @@ function initReplyForm(load_attachments, init_customer_selector, is_new_conv)
 {
 	$(document).ready(function() {
 
+		rememberReplyRecipients();
+
 		convEditorInit();
 		if (typeof(load_attachments) != "undefined") {
 			loadAttachments();
@@ -2303,6 +2435,7 @@ function initReplyForm(load_attachments, init_customer_selector, is_new_conv)
 	    	fs_processing_send_reply = true;
 
 	    	var button = $(this);
+			var editor = $('#body');
 
 	    	// Validate before sending
 	    	form = $(".form-reply:first");
@@ -2310,11 +2443,11 @@ function initReplyForm(load_attachments, init_customer_selector, is_new_conv)
 			// Sync Summernote's empty-HTML state to the textarea before validation so that
 			// data-parsley-required treats visually-empty content (e.g. <div><br></div>)
 			// the same as a truly empty field (issue #4590).
-			if (typeof $.fn.summernote !== 'undefined' && $('#body').length) {
-				var body_code = $('#body').summernote('code');
+			if (typeof $.fn.summernote !== 'undefined' && editor.length) {
+				var body_code = editor.summernote('code');
 				body_code = body_code.replace(/<(?!img\b)[^>]+>/gi, '').replace(/&nbsp;/gi, '');
 				if (!$.trim(body_code)) {
-					$('#body').val('');
+					editor.val('');
 				}
 			}
 
@@ -2340,6 +2473,25 @@ function initReplyForm(load_attachments, init_customer_selector, is_new_conv)
 	    		return;
 	    	}
 
+			// Convert last entered text into link if needed.
+			// https://github.com/freescout-help-desk/freescout/issues/5280
+			var word = editor.summernote('createRange').getWordRange();
+			var url = word.toString();
+			if (/^https?:\/\/\S+$/i.test(url)) {
+				var focused_element = document.activeElement;
+				editor.summernote('createLink', {
+					range: word,
+					text: url,
+					url,
+					isNewWindow: false
+				});
+				// Unselect the word
+				window.getSelection().removeAllRanges();
+				if (focused_element && typeof focused_element.focus === 'function') {
+				    focused_element.focus();
+				}
+			}
+
 			data = form.serialize();
 	    	data += '&action=send_reply';
 
@@ -2348,7 +2500,7 @@ function initReplyForm(load_attachments, init_customer_selector, is_new_conv)
 	    	var is_chat = isChatMode();
 	    	var disable_editor = isChatMode() && !is_note;
 	    	if (disable_editor) {
-	    		$('#body').summernote('disable');
+	    		editor.summernote('disable');
 	    	}
 
 			fsAjax(data, laroute.route('conversations.ajax'), function(response) {
@@ -2367,7 +2519,7 @@ function initReplyForm(load_attachments, init_customer_selector, is_new_conv)
 						showAjaxError(response);
 						button.button('reset');
 						if (disable_editor) {
-							$('#body').summernote('enable');
+							editor.summernote('enable');
 						}
 					}
 					loaderHide();
@@ -2814,6 +2966,7 @@ function searchInit()
 		starConversationInit();
 
 		customersPagination();
+		customersViewSwitchInit();
 
 		$(".sidebar-menu .menu-link a").filter('[data-filter]').click(function(e){
 			var trigger = $(this);
@@ -2992,6 +3145,44 @@ function conversationPagination()
 	$(".table-conversations .pager-nav").click(function(e){
 		loadConversations($(this).attr('data-page'), $(this).parents('.table-conversations:first'));
 		e.preventDefault();
+	});
+}
+
+// Customers list view: cards (default) or table.
+// The choice is stored in the "customers_view" cookie and used by the server
+// when rendering the list (Helper::getCustomersView()).
+function setCustomersView(view)
+{
+	view = (view == 'table') ? 'table' : 'cards';
+
+	// SameSite=Lax and no Secure flag, so the cookie works on HTTP installations too.
+	setCookie('customers_view', view, {samesite: 'Lax'});
+	updateCustomersViewSwitch(view);
+	loadCustomers();
+}
+
+function updateCustomersViewSwitch(view)
+{
+	$('.customers-view-switch').each(function() {
+		var button = $(this);
+		var is_table = (view == 'table');
+		var title = is_table ? button.attr('data-title-cards') : button.attr('data-title-table');
+
+		// Icon shows the view the user will switch to.
+		button.toggleClass('glyphicon-th-large', is_table)
+			.toggleClass('glyphicon-th-list', !is_table)
+			.attr('title', title)
+			.attr('data-original-title', title);
+	});
+}
+
+function customersViewSwitchInit()
+{
+	$('.customers-view-switch').click(function(e) {
+		setCustomersView(getCookie('customers_view') == 'table' ? 'cards' : 'table');
+		// The switch is inside the tab link.
+		e.preventDefault();
+		e.stopPropagation();
 	});
 }
 
@@ -3457,6 +3648,19 @@ function showModalDialog(body, options)
 	}
 	options = Object.assign(standard_options, options);
 
+	// Focus the primary button, so Enter confirms and Tab moves to Cancel.
+	// Skipped when the dialog has a field to fill in.
+	var on_show = options.on_show;
+	options.on_show = function(modal, a) {
+		if (typeof(on_show) == "function") {
+			on_show(modal, a);
+		}
+		var modal_body = modal.children().find('.modal-body:first');
+		if (!modal_body.find('input:visible,textarea:visible,select:visible').length) {
+			modal_body.find('.btn-primary:enabled:visible:first').focus();
+		}
+	};
+
 	triggerModal(null, options);
 }
 
@@ -3660,6 +3864,11 @@ function polycastInit()
 				data.replying = 1;
 			} else {
 				data.replying = 0;
+			}
+			if (isChatMode()) {
+				data.chat_mode = 1;
+			} else {
+				data.chat_mode = 0;
 			}
 			if (!fs_prev_focus && document.hasFocus()) {
 				data.conversation_view_focus = 1;
@@ -3917,7 +4126,7 @@ function polycastInit()
 		    }
 
 		    if (typeof(data.folders_html) != "undefined" && data.folders_html) {
-		    	var folder_id = el_folders.children('li.active:first').attr('data-folder_id');
+		    	var folder_id = getFolderId();
 		    	el_folders.html(data.folders_html);
 		    	var active_folder = el_folders.children('li[data-folder_id="'+folder_id+'"]');
 		    	active_folder.addClass('active');
@@ -3971,11 +4180,16 @@ function polycastInit()
 		    	var active_chat = chats.children('li[data-chat_id="'+chat_id+'"]');
 		    	active_chat.addClass('active');
 
-		    	initChats();
+		    	initChatsLoadMore();
 		    }
 	    });
 
-	    initChats();
+	    initChatsLoadMore();
+	}
+
+	// Refresh conv list.
+    if (isConvListVisible()) {
+    	initConvListPolling();
 	}
 
     // at any point you can disconnect
@@ -3983,6 +4197,52 @@ function polycastInit()
 
     // and when you disconnect, you can again at any point reconnect
     //poly.reconnect();
+}
+
+// poly is globally available
+function initConvListPolling()
+{
+	if (conv_list_polling_set) {
+		return;
+	}
+
+	var conv_list = $('#conv-list-col-items');
+
+	var folder_id = getFolderId();
+
+	if (folder_id) {
+		conv_list_polling_set = true;
+
+	    var channel = poly.subscribe('conv_list.'+folder_id);
+
+	    channel.on('App\\Events\\RealtimeConvList', function(data, event) {
+	        if (!data) {
+				return;
+		    }
+
+	        if (typeof(data.folder_id) == "undefined" || data.folder_id != folder_id) {
+	        	return;
+		    }
+
+		    // Show conversations
+		    if (typeof(data.list_html) != "undefined" && data.list_html) {
+		    	
+		    	var active_id = conv_list.children('li.active:first').attr('data-chat_id');
+
+		    	conv_list.html(data.list_html);
+
+		    	var active_item = conv_list.children('li[data-chat_id="'+active_id+'"]');
+		    	active_item.addClass('active');
+
+		    	initConvListLoadMore();
+		    }
+	    });
+	}
+}
+
+function getFolderId()
+{
+	return $('#folders').children('li.active:first').attr('data-folder_id');
 }
 
 function playAudioNotification(data)
@@ -4051,7 +4311,7 @@ function playAudio()
     });
 }
 
-function initChats()
+function initChatsLoadMore()
 {
 	$('.chats-load-more').click(function(e) {
 		var button = $(this);
@@ -4069,7 +4329,7 @@ function initChats()
 				if (isAjaxSuccess(response)) {
 					button.parent().before(response.html);
 					button.parent().remove();
-					initChats();
+					initChatsLoadMore();
 				} else {
 					showAjaxResult(response);
 				}
@@ -4082,9 +4342,90 @@ function initChats()
 	});
 }
 
+// Conversations list column (between folders and the conversation) on the conversation page.
+function initConvCol()
+{
+	var wrapper = $('#conv-list-2col');
+
+	if (!wrapper.length) {
+		return;
+	}
+
+	// Open conv list
+	$('#conv-list-open').click(function(e) {
+		setCookie('conv_col', '1', {samesite: 'Lax'});
+		wrapper.removeClass('hidden');
+		$('#conv-list-open').addClass('hidden');
+		if (!$(this).hasClass('loaded')) {
+			$(this).addClass('loaded');
+			convListLoad();
+		}
+		initConvListPolling();
+	});
+
+	// Hide conv list
+	$('#conv-list-col-toggle').click(function(e) {
+		deleteCookie('conv_col');
+		wrapper.addClass('hidden');
+		$('#conv-list-open').removeClass('hidden');
+	});
+
+	// Load conversations
+	if (!wrapper.hasClass('hidden')) {
+		convListLoad();
+	}
+}
+
+function convListLoad()
+{
+	var col = $('#conv-list-col');
+	var conv_list = $('#conv-list-col-items');
+	var button = $('.chats-load-more:first');
+
+	if (button.length) {
+		button.button('loading');
+	}
+	
+	fsAjax(
+		{
+			action: 'conv_list',
+			mailbox_id: col.attr('data-mailbox_id'),
+			folder_id: col.attr('data-folder_id'),
+			conversation_id: col.attr('data-conversation_id'),
+			offset: $('#conv-list-col-items .chat-item').length - 1
+		},
+		laroute.route('conversations.ajax'),
+		function(response) {
+			if (isAjaxSuccess(response)) {
+				conv_list.append(response.html);
+				conv_list.find('[data-toggle="tooltip"]').tooltip();
+				button.parent().remove();
+				conv_list.parent().addClass('loaded');
+
+				initConvListLoadMore();
+			} else {
+				showAjaxResult(response);
+			}
+		}, true
+	);
+}
+
+function initConvListLoadMore()
+{
+	$('#conv-list-col-items .chats-load-more:first').off('click').on('click', function(e) {
+		convListLoad();
+		e.preventDefault();
+	});
+}
+
 function convIsChat()
 {
 	return $('#conv-layout').hasClass('conv-type-chat');
+}
+
+function isConvListVisible()
+{
+	return getCookie('conv_col');
 }
 
 function convGetUserId()
@@ -4710,11 +5051,13 @@ function discardDraft(thread_id)
 							} else {
 								// Hide editor
 								hideReplyEditor();
-								$("#to").val(
+								// https://github.com/freescout-help-desk/freescout/pull/5674
+								restoreReplyRecipients();
+								/*$("#to").val(
 									$("#to option:first").val()
-								);
-								$(".conv-reply-block :input[name='cc']:first").val('');
-								$(".conv-reply-block :input[name='bcc']:first").val('');
+								);*/
+								//$(".conv-reply-block :input[name='cc[]']:first").val('');
+								//$(".conv-reply-block :input[name='bcc[]']:first").val('');
 								setReplyBody('');
 								$('#conv-subject').removeClass('action-visible');
 							}
@@ -4848,6 +5191,43 @@ function threadHideOriginal(trigger)
 	trigger.addClass('hidden');
 }
 
+function rememberReplyRecipients()
+{
+	if (fs_reply_recipients !== null || !getGlobalAttr('conversation_id')) {
+		return;
+	}
+	fs_reply_recipients = {
+		to: $('#to').val(),
+		cc: $('#cc').val() || [],
+		bcc: $('#bcc').val() || []
+	};
+}
+
+function restoreReplyRecipients()
+{
+	if (fs_reply_recipients === null) {
+		$("#to").val($("#to option:first").val());
+		return;
+	}
+	if (fs_reply_recipients.to) {
+		$('#to').val(fs_reply_recipients.to);
+	}
+	var fields = ['cc', 'bcc'];
+	for (var f in fields) {
+		var select = $('#'+fields[f]);
+		if (!select.length) {
+			continue;
+		}
+		cleanSelect2(select);
+		var emails = fs_reply_recipients[fields[f]];
+		for (var i in emails) {
+			addSelect2Option(select, {
+				id: emails[i], text: emails[i]
+			});
+		}
+	}
+}
+
 function hideReplyEditor()
 {
 	$(".conv-action-block").addClass('hidden');
@@ -4957,17 +5337,39 @@ function conversationsTableInit()
 	// if ("ontouchstart" in window)
 	// {
 	$(document).ready(function() {
-		$('.conv-row').on('contextmenu', function(event) {
-			event.preventDefault();
-			event.stopPropagation();
-		});
+		// Toggle the row only once per press: on touch devices
+		// both contextmenu and taphold may fire for the same press.
+		var toggleRow = function(row) {
+			if ($(row).data('conv_toggled')) {
+				return;
+			}
+			$(row).data('conv_toggled', true);
 
-		$('.conv-row').on('taphold', {duration: 700}, function(event) {
-			var row = $(event.target).parents('.conv-row');
 			var checkbox = $(row).find('input.conv-checkbox');
 			$(checkbox).prop('checked', !checkbox.prop('checked'));
 			$(checkbox).trigger('change');
 			$(row).toggleClass('selected');
+		};
+
+		$('.conv-row').on('touchstart mousedown', function(event) {
+			$(this).data('conv_touch', event.type == 'touchstart');
+			$(this).data('conv_toggled', false);
+		});
+
+		$('.conv-row').on('contextmenu', function(event) {
+			event.preventDefault();
+			event.stopPropagation();
+
+			// The browser fires contextmenu after its native long press
+			// (with haptic feedback on Android), on press or on release,
+			// which may happen before taphold.
+			if ($(this).data('conv_touch')) {
+				toggleRow(this);
+			}
+		});
+
+		$('.conv-row').on('taphold', {duration: 700}, function(event) {
+			toggleRow(this);
 		});
 	});
 	//}

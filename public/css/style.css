@@ -261,6 +261,111 @@ body.user-is-guest {
     /*margin-left: 0!important;*/
     border-radius: 0 14px 14px 0;
 }
+#conv-list-2col {
+    border-bottom: 1px solid #e3e8eb;
+    display: block;
+    flex: 0 0 300px;
+    width: 300px;
+    box-sizing: border-box;
+    background-color: #fff;
+    border-left: 1px solid #d6dde3;
+    position: relative;
+}
+@media (min-width:992px) {
+    #conv-list-2col {
+        min-height: 100vh;
+    }
+}
+/* The list column does not take part in the row height: it fills the
+   column (down to the footer) and the list scrolls inside it, so "Load more"
+   never pushes the footer down. */
+#conv-list-col {
+    position: sticky;
+    top: 0;
+    height: calc(100vh - 54px);
+    display: flex;
+    flex-direction: column;
+    background:
+        linear-gradient(100deg,
+            rgba(255, 255, 255, 0) 30%,
+            rgba(255, 255, 255, .85) 50%,
+            rgba(255, 255, 255, 0) 70%) 120% 0 / 200% 100% no-repeat,
+        url('../../img/conv-list.png') 0 54px repeat-y #fff;
+    animation: bg-shimmer 2s linear infinite;
+}
+@keyframes bg-shimmer {
+    from { background-position: 120% 0, 0 54px; }
+    to   { background-position: -20% 0, 0 54px; }
+}
+#conv-list-col.loaded {
+    position: absolute;
+    height: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    background: none;
+    animation: none;
+}
+#conv-list-col-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-left: 22px;
+    color: #2a3b47;
+    font-size: 16px;
+    height: 53px;
+    background-color: #deecf9;
+    flex: 0 0 auto;
+}
+#conv-list-col-toggle {
+    color: #93a1af;
+    width: 37px;
+    text-align: center;
+    line-height: 53px;
+    height: 53px;
+    border-left: 1px solid #d6dde3;
+    background-color: #ebf1f6;
+    border-bottom: 1px solid #e3e8eb;
+}
+#conv-list-col-toggle:hover {
+    background-color: #f1f3f5
+}
+#conv-list-col-toggle:hover,
+#conv-list-col-toggle:focus {
+    color: #2a3641;
+    text-decoration: none;
+}
+#conv-list-2col .chat-preview {
+    max-width: 250px;
+}
+#conv-list-col-items {
+    height: 100vh;
+    height: auto;
+    min-height: 0;
+    margin-right: 0;
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-top: 0;
+    position: static;
+    box-shadow: none;
+    max-width: none;
+    min-width: 0;
+    margin-bottom: 0;
+}
+#conv-list-col-items > li > a {
+    padding-left: 22px;
+}
+.conv-list-text {
+    margin-top: 2px;
+}
+.conv-list-preview {
+    max-width: 258px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: inline-block;
+}
 @media (max-width:991px) {
     .layout-2col {
         display: block;
@@ -523,8 +628,8 @@ label.radio {
     cursor: pointer;
 }
 select.form-control {
-    height: 28px;
-    line-height: 28px;
+    height: 30px;
+    line-height: 30px;
 }
 .input-sized-xs {
     width: 87px;
@@ -532,15 +637,17 @@ select.form-control {
 .input-sized-sm {
     width: 187px;
 }
-.input-sized {
-    width: 270px;
-}
+.input-sized,
 .input-sized-lg {
     width: 320px;
     max-width: 100%;
 }
 .control-label {
     font-size: 13.4px;
+    color: #5d6c79;
+}
+.has-error .control-label {
+    color: #a94442;
 }
 .controls>.checkbox:first-child,
 .controls>.radio:first-child {
@@ -562,7 +669,8 @@ select.form-control {
     position: relative;
 }
 .input-group-btn .btn {
-    height: 28px;
+    height: 30px;
+    line-height: 28px;
 }
 .btn-sidebar {
     margin: 8px 0 0 20px;
@@ -622,6 +730,7 @@ select.form-control {
 .has-error .form-control.parsley-exclude {
     border-color: #ccc;
 }
+.has-error .select2-container--default .select2-selection--single,
 .has-error .select2-container--default .select2-selection--multiple,
 .has-error .select2-container--default.select2-container--focus .select2-selection--multiple {
     border-color: #a94442;
@@ -635,6 +744,9 @@ select.form-control {
 }
 .btn .glyphicon {
     top: 2px;
+}
+select.input-md {
+    height: 38px;
 }
 select.input-lg {
     height: 38px;
@@ -657,6 +769,7 @@ select[multiple].input-md {
     padding: 3px 9px;
     font-size: 12px;
     line-height: 20px;
+    height: 30px;
     border-radius: 3px;
 }
 .form-help {
@@ -720,9 +833,29 @@ select[multiple].input-md {
 .input-group .input-group-btn {
     vertical-align: top;
 }
+.btn {
+    border-radius: 6px;
+}
+.btn-square {
+    border-radius: 0 !important;
+}
 @media (min-width: 435px) {
+    .input-sized,
     .input-sized-lg {
         width: 387px;
+    }
+}
+@media (min-width: 768px) {
+    .input-sized,
+    .input-sized-lg {
+        width: 100%;
+        max-width: 400px;
+    }
+    /* .input-group is a table, so percent width is unreliable. */
+    .input-group.input-sized,
+    .input-group.input-sized-lg {
+        width: 400px;
+        max-width: 100%;
     }
 }
 
@@ -730,7 +863,7 @@ select[multiple].input-md {
  * Cards
  */
 .card {
-    border: 1px solid #dedede;
+    border: 1px solid #e1e5e8;
     box-sizing: border-box;
     display: block;
     position: relative;
@@ -739,8 +872,8 @@ select[multiple].input-md {
     width: 270px;
     height: 82px;
     float: left;
-    -webkit-box-shadow:0 0 5px rgba(0,0,0,.2);
-    box-shadow:0 0 5px rgba(0,0,0,.2);
+    border-radius: 8px;
+    box-shadow: 0 1px 2px rgba(23, 43, 58, .06), 0 1px 8px rgba(23, 43, 58, .05);
 }
 a.card:active,
 a.card:focus,
@@ -877,13 +1010,9 @@ a h4 {
 .dash-card {
     float: left;
     position: relative;
-    border: 1px solid #dedede;
+    border: 1px solid #e1e5e8;
     border-radius: 15px;
-    /*border-left: 4px solid #5cb85c;*/
-    /*-webkit-box-shadow: 0 1px 7px 0 rgba(0,0,0,.08);
-    box-shadow: 0 1px 7px 0 rgba(0,0,0,.08);*/
-    -webkit-box-shadow:0 0 5px rgba(0,0,0,.2);
-    box-shadow:0 0 5px rgba(0,0,0,.2);
+    box-shadow: 0 1px 2px rgba(23, 43, 58, .06), 0 1px 8px rgba(23, 43, 58, .05);
     box-sizing: border-box;
     min-height: 256px;
     margin: 0 20px 20px 0;
@@ -1066,6 +1195,7 @@ https://github.com/freescout-help-desk/freescout/issues/4354
     font-size: 14px;
     line-height: 18px;
     height: 30px;
+    padding: 5px 10px;
 }
 .note-actions {
     float: right;
@@ -1111,7 +1241,7 @@ https://github.com/freescout-help-desk/freescout/issues/4354
     margin-bottom: -1px;
 }
 .btn-group-send .btn {
-    height: 38px;
+    height: 36px;
 }
 .btn-send-menu {
     padding-left: 8px;
@@ -1165,6 +1295,16 @@ https://github.com/freescout-help-desk/freescout/issues/4354
     min-width: 83px;
     padding-left: 5px;
 }
+.panel-heading.note-toolbar .note-remove-format-btn {
+    padding-right: 7px;
+}
+.panel-heading.note-toolbar .note-remove-format .dropdown-toggle {
+    width: 20px;
+    padding-left: 5px;
+}
+.note-remove-format .dropdown-menu {
+    padding-right: 5px;
+}
 @media (max-width:390px) {
     .note-bottom-div {
         display: none;
@@ -1206,6 +1346,7 @@ https://github.com/freescout-help-desk/freescout/issues/4354
         right: 0;
     }
 }
+
 /**
  * Customer
  */
@@ -1239,8 +1380,9 @@ https://github.com/freescout-help-desk/freescout/issues/4354
 }
 .customer-name {
     color: #2a3b47;
-    font-size: 17px;
-    line-height: 21px;
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 26px;
 }
 .customer-name:hover,
 .customer-name:focus {
@@ -1325,6 +1467,11 @@ https://github.com/freescout-help-desk/freescout/issues/4354
     margin-top: 9px;
     color: #93a1af;
     word-wrap: break-word;
+}
+.customer-extra .customer-section {
+    margin-top: 5px;
+    padding-top: 4px;
+    border-top: 1px solid #eef1f4;
 }
 .customer-divider {
     display: block;
@@ -1528,6 +1675,22 @@ table.table-conversations td.conv-attachment {
 .table-conversations .conv-customer {
     width: 150px;
 }
+/* Only the name is truncated, so the counter always stays visible */
+.conv-customer-line {
+    display: flex;
+    align-items: baseline;
+}
+.conv-customer-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.conv-customer-line .conv-counter {
+    flex-shrink: 0;
+    /* As with inline padding, the padding must not make the line taller */
+    margin-top: -1px;
+    margin-bottom: -1px;
+}
 .table-conversations .conv-spam .conv-customer a {
     color: #93a1af;
 }
@@ -1567,7 +1730,7 @@ table.table-conversations td.conv-attachment {
 .conv-counter {
     background: #97a3ad;
     color: #fff;
-    line-height: 17px;
+    line-height: 14px;
     position: relative;
     padding: 1px 5px;
     margin-left: 2px;
@@ -1582,6 +1745,14 @@ table.table-conversations td.conv-attachment {
     font-size: 14px;
     margin-top: 2px;
     padding-bottom: 8px;
+}
+.table-conversations .conv-owner {
+    width: 160px;
+}
+.table-conversations td.conv-owner a {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
 }
 .table-conversations .conv-number {
     width: 86px;
@@ -1718,8 +1889,10 @@ button.conv-checkbox-clear {
         height: 80px;
         border-bottom: 1px solid #e3e8eb;
     }
+    /* The mailbox name adds a line (20.1px) to the preview. With 97px the subject's link
+       ended below the row, and its fader whitened the row's bottom border */
     .table.table-conversations.show-mailbox tbody tr {
-        height: 97px;
+        height: 100px;
     }
 
     .table-conversations .conv-attachment-mobile
@@ -1756,8 +1929,13 @@ button.conv-checkbox-clear {
         top: 0;
         margin-left: 10px!important;
     }
+    /* Stretch to the date, leaving room for it */
+    .table.table-conversations td.conv-customer {
+        width: auto;
+        inset-inline-start: 0;
+        inset-inline-end: 110px;
+    }
     .conv-customer a {
-        width: 350px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -1775,6 +1953,27 @@ button.conv-checkbox-clear {
         font-size: 12px!important;
         background-color: transparent!important;
         font-weight: normal;
+    }
+    /* The link's ellipsis truncates the assignee, so it gets the assignee's style */
+    .table-conversations td.conv-customer a {
+        color: #93a1af;
+        font-weight: normal;
+    }
+    .conv-customer-line {
+        display: inline;
+        color: #2a3b47;
+    }
+    .conv-active .conv-customer-line {
+        font-weight: bold;
+    }
+    .conv-spam .conv-customer-line {
+        color: #93a1af;
+    }
+    /* Leave room for the counter and the assignee */
+    .conv-customer-name {
+        display: inline-block;
+        max-width: 60%;
+        vertical-align: top;
     }
     .conv-counter {
         top: -1px;
@@ -1838,11 +2037,6 @@ button.conv-checkbox-clear {
         display: block;
     }
 }
-@media (max-width:700px) {
-    .conv-customer a {
-        width: 250px;
-    }
-}
 
 /**
  * Conversation
@@ -1881,6 +2075,21 @@ button.conv-checkbox-clear {
     /*border-bottom: 1px solid #e3e8eb;*/
     padding-left: 9px;
 }
+#conv-list-open {
+    width: 37px;
+    height: 53px;
+    line-height: 53px;
+    float: left;
+    margin-left: -9px;
+    text-align: center;
+    font-size: 16px;
+    background-color: #ebf1f6;
+    border-right: 1px solid #d6dde3;
+    border-bottom: 1px solid #e3e8eb;
+}
+#conv-list-open:hover {
+    background-color: #f1f3f5
+}
 .conv-actions .conv-action {
     display: inline-block;
     padding: 16px 16px 9px;
@@ -1907,7 +2116,8 @@ button.conv-checkbox-clear {
     border-bottom: 1px solid #e3e8eb;
 }
 .conv-subj-block {
-    padding: 16px 9px 18px 20px;
+    /* The bottom padding leaves room for #conv-viewers under the number when the subject is one line */
+    padding: 16px 9px 24px 20px;
 }
 .conv-following .conv-subjtext > span:before {
     content: "🔔 ";
@@ -1934,16 +2144,11 @@ button.conv-checkbox-clear {
     width: 100%;
 }
 .conv-subjtext {
-    float: left;
-    display: inline-block;
     color: #2a3b47;
     font-weight: 400;
     font-size: 23px;
     line-height: 30px;
     word-wrap: break-word;
-    margin-right: 8px;
-    width: 100%;
-    max-width: 100%;
 }
 .conv-subj-editor,
 .conv-subj-editing > span {
@@ -1952,11 +2157,14 @@ button.conv-checkbox-clear {
 .conv-subj-editing .conv-subj-editor {
     display: table;
 }
+/* Floats in the right padding of .conv-subjwrap (negative margin-right = that padding),
+   so the subject wraps only around the part that does not fit there (a long number, icons added by modules)
+   and keeps 8px away from it */
 .conv-numnav {
-    margin: 0;
-    position: absolute;
+    float: right;
+    margin: 0 -145px 0 8px;
+    position: relative;
     color: #93a1af;
-    right: 0;
     top: 5px;
 }
 .conv-numnav strong {
@@ -2009,6 +2217,7 @@ button.conv-checkbox-clear {
 }
 .conv-info .btn {
     height: 30px;
+    line-height: 28px;
 }
 .conv-info > li {
     display: inline-block;
@@ -2451,6 +2660,36 @@ button.conv-checkbox-clear {
 .thread-content	img {
     max-width: 100%;
 }
+/* Keep aspect ratio when max-width shrinks an image with width set in attributes or inline style.
+   !important overrides inline height (style="width:13.3in;height:6.6in").
+   Purified styles have no spaces, so "width:" at the start or after ";" does not match max-width. */
+.thread-content	img[width],
+.thread-content	img[style^="width:"],
+.thread-content	img[style*=";width:"] {
+    height: auto !important;
+}
+/* Fit wide tables (e.g. from Outlook) into the thread instead of scrolling it horizontally.
+   Words are not broken: a table that is still wider than the thread because of its longest words
+   (like a long link) scrolls the thread. overflow-wrap: anywhere broke words even when there was room,
+   e.g. in a one-column table of IDs a bit wider than the width set by Outlook.
+   Cell widths are reset as Outlook sets arbitrary percentages (like 1.7% for a column with long text),
+   which would squeeze such columns to one word per line. */
+.thread-content table {
+    max-width: 100%;
+}
+.thread-content td,
+.thread-content th {
+    width: auto !important;
+}
+/* On phones a fitted table would have one word per line,
+   so the table is scrolled horizontally on its own instead of the whole thread. */
+@media (max-width:700px) {
+    .thread-content table {
+        display: block;
+        overflow-x: auto;
+        width: auto !important;
+    }
+}
 .conv-new #conv-toolbar {
     border-bottom: 1px solid #d4d9dd;
     padding: 6px 0 7px 0;
@@ -2712,7 +2951,7 @@ ul.sidebar-block-list {
         padding-right: 90px;
     }
     .conv-subj-block {
-        padding: 16px 2px 12px 13px;
+        padding: 16px 2px 18px 13px;
     }
     .conv-top-block {
         padding: 10px 13px;
@@ -2726,6 +2965,8 @@ ul.sidebar-block-list {
     }
     .conv-numnav {
         top: 0;
+        /* = padding-right of .conv-subjwrap */
+        margin-right: -90px;
     }
     .conv-info .btn-group button.conv-info-val {
         padding-right: 17px;
@@ -2883,11 +3124,17 @@ ul.sidebar-block-list {
     .customer-name {
         float: left;
         margin-right: 7px;
+        /* Same height as the email line next to the name: keeps them on one line
+           and makes company, job title, etc. start below the name */
+        line-height: 21px;
         /*font-weight: bold;
         font-size: 18px;*/
     }
-    .customer-section {
+    .customer-section,
+    .customer-extra .customer-section {
         margin-top: 0px;
+        padding-top: 0;
+        border-top: 0;
     }
     .customer-trigger {
         top: 16px;
@@ -2930,6 +3177,12 @@ ul.sidebar-block-list {
     .conv-sidebar-block .panel {
         background-color: #fff;
     }
+    /* Overrides the border and shadow of .panel-group .panel: the collapsed panel is empty
+       and its border made the bottom border of the customer block 3px thick */
+    .conv-sidebar-block .panel-group .panel {
+        border: 0;
+        box-shadow: none;
+    }
     .conv-sidebar-block .panel-group {
         margin: 0;
     }
@@ -2948,6 +3201,17 @@ ul.sidebar-block-list {
     .conv-sidebar-block .collapse.in {
         display: none!important;
         height: 0!important;
+    }
+    /* While animating, Bootstrap replaces .collapse with .collapsing, the rules above don't apply
+       and the block was animated the opposite way: on "close" it grew and only then disappeared,
+       on open it appeared after a delay. Show the final state at once instead:
+       aria-expanded is the state Bootstrap is switching to */
+    .conv-sidebar-block .collapsing[aria-expanded="true"] {
+        display: none!important;
+    }
+    .conv-sidebar-block .collapsing[aria-expanded="false"] {
+        display: block!important;
+        height: auto!important;
     }
     .customer-social-profiles {
         white-space: normal;
@@ -3031,15 +3295,9 @@ ul.sidebar-block-list {
     transform: translate(-50%,0) translate(-1px,0);
     z-index: 1099;
     max-width: 300px;
-    border-radius: 0;
     flex-direction: row;
     padding: 9px 14px;
-    /*-webkit-box-shadow: 4px 4px 12px rgba(0, 0, 0, .175);
-    box-shadow: 4px 4px 12px rgba(0, 0, 0, .175);*/
-    -webkit-box-shadow:0 0 5px rgba(0,0,0,.4);
-    box-shadow:0 0 5px rgba(0,0,0,.4);
     cursor: default;
-
     overflow-wrap: break-word;
     word-wrap: break-word;
     -ms-word-break: break-all;
@@ -3053,7 +3311,14 @@ ul.sidebar-block-list {
     -webkit-hyphens: auto;
     hyphens: auto;
     border: 0;
+    border-top: 4px solid #009272;
+    border-radius: 4px;
+    box-shadow: 0 0 22px rgba(18, 51, 76, .1);
 }
+.alert-floating.alert-danger { border-top-color: #e11d48; }
+.alert-floating.alert-warning { border-top-color: #d97706; }
+.alert-floating.alert-info { border-top-color: #4f46e5; }
+
 .alert-floating.alert-danger,
 .alert-floating.alert-warning {
     position: fixed;
@@ -3068,6 +3333,10 @@ ul.sidebar-block-list {
 .alert-floating a:focus {
     color: #2a3b47;
     text-decoration: underline;
+}
+.alert-floating .glyphicon {
+    font-size: 13px;
+    vertical-align: inherit;
 }
 .alert-floating.alert-success .glyphicon {
     color: #53b961;
@@ -3279,14 +3548,28 @@ ul.sidebar-block-list {
  * Select2
  */
 .select2-container--default .select2-selection--multiple {
-    border-radius: 3px;
-    border: 1px solid #c1cbd4;
+    border-radius: 6px;
+    border: 1px solid #d5dbe0;
 }
 .select2-container--default.select2-container--focus .select2-selection--multiple {
-    border: 1px solid #c1cbd4;
+    border: 1px solid #d5dbe0;
 }
 .select2-dropdown {
-    border: 1px solid #c1cbd4;
+    border: 1px solid #d5dbe0;
+    border-radius: 6px;
+}
+.select2-container--default .select2-search--dropdown .select2-search__field {
+    border-color: #d5dbe0;
+    border-radius: 6px;
+}
+.select2-container .select2-selection--single {
+    height: 30px;
+}
+.select2-container--default .select2-selection--single .select2-selection__rendered {
+    line-height: 28px;
+}
+.select2-container--default .select2-selection--single .select2-selection__arrow {
+    height: 28px;
 }
 .select2-container--default .select2-selection--multiple .select2-selection__choice__remove {
     float: right;
@@ -3308,10 +3591,11 @@ ul.sidebar-block-list {
     display: none !important;
 }
 .select2-multi-dropdown .select2-results__option:last-child {
-    border-bottom: 1px solid #c1cbd4;
+    border-bottom: 1px solid #d5dbe0;
 }
 .select2-container--default .select2-selection--single {
-    border-color: rgb(193, 203, 212);
+    border-color: #d5dbe0;
+    border-radius: 6px;
 }
 .select2-selection--single .select2-selection__rendered {
     font-size: 13px;
@@ -3327,14 +3611,41 @@ ul.sidebar-block-list {
     line-height: 17px;
 }
 .select2-container .select2-selection--multiple {
-    min-height: auto;
+    min-height: 30px;
 }
 .dropdown-menu .select2-selection__choice__remove {
     font-size: 13.4px;
 }
-.input-group .select2:nth-child(2) .select2-selection {
+.input-group > .select2-container:not(:last-child) .select2-selection {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
+}
+.input-group > .input-group-addon + .select2-container .select2-selection,
+.input-group > .input-group-btn + .select2-container .select2-selection,
+.input-group > .form-control + .select2-container .select2-selection {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+/* .input-md applied to select2 (class on the <select> or on the container). */
+.input-md + .select2-container .select2-selection--single,
+.select2-container.input-md .select2-selection--single {
+    height: 38px;
+}
+.input-md + .select2-container--default .select2-selection--single .select2-selection__rendered,
+.select2-container--default.input-md .select2-selection--single .select2-selection__rendered {
+    line-height: 36px;
+}
+.input-md + .select2-container--default .select2-selection--single .select2-selection__arrow,
+.select2-container--default.input-md .select2-selection--single .select2-selection__arrow {
+    height: 36px;
+}
+.input-md + .select2-container .select2-selection--multiple,
+.select2-container.input-md .select2-selection--multiple {
+    min-height: 38px;
+}
+.input-md + .select2-container .select2-selection--multiple .select2-selection__rendered,
+.select2-container.input-md .select2-selection--multiple .select2-selection__rendered {
+    padding-top: 5px;
 }
 /*.select2-with-loader .select2-selection__rendered {
     padding-right: 30px;
@@ -3515,14 +3826,14 @@ ul.sidebar-block-list {
  */
 .module-card {
     background-color: #ffffff;
-    border: 1px solid #dedede;
+    border: 1px solid #e1e5e8;
+    border-radius: 8px;
     box-sizing: border-box;
     display: block;
     position: relative;
     margin: 0 18px 18px 0;
     padding: 18px;
-    -webkit-box-shadow:0 0 5px rgba(0,0,0,.2);
-    box-shadow:0 0 5px rgba(0,0,0,.2);
+    box-shadow: 0 1px 2px rgba(23, 43, 58, .06), 0 1px 8px rgba(23, 43, 58, .05);
 }
 .module-card.active {
     background-color: #deffde;
@@ -3636,6 +3947,114 @@ ul.sidebar-block-list {
 .customers-pager a:hover {
     color: #333;
 }
+/* Customers list: table view */
+.customers-view-switch {
+    color: #93a1af;
+    cursor: pointer;
+    margin-left: 6px;
+    font-size: 13px;
+    top: 2px;
+}
+.customers-view-switch:hover {
+    color: #333;
+}
+.customers-list {
+    --customers-cols: minmax(0, 34fr) minmax(0, 30fr) minmax(0, 16fr) minmax(0, 20fr);
+    display: flex;
+    flex-direction: column;
+    background-color: #fff;
+}
+.customers-list-head,
+.customers-list-row {
+    display: grid;
+    grid-template-columns: var(--customers-cols);
+    align-items: center;
+    column-gap: 12px;
+    padding: 0 16px;
+}
+.customers-list-head {
+    padding-top: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #ddd;
+    color: #93a1af;
+}
+.customers-list-row,
+.customers-list-row:hover,
+.customers-list-row:focus {
+    color: #2a3b47;
+    text-decoration: none;
+}
+.customers-list-row {
+    min-height: 48px;
+    background-color: #fff;
+    border-top: 1px solid #ddd;
+    cursor: pointer;
+}
+.customers-list-head + .customers-list-row {
+    border-top: 0;
+}
+.customers-list-row:nth-of-type(odd) {
+    background-color: #f9f9f9;
+}
+.customers-list-row:hover,
+.customers-list-row:focus {
+    background-color: #f5f5f5;
+    outline: none;
+}
+.customers-list-cell {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.customers-list-row .customers-list-cell {
+    padding: 8px 0;
+    color: #5b6b79;
+}
+.customers-list-col-name {
+    display: flex;
+    align-items: center;
+}
+.customers-list-row .customers-list-col-name {
+    color: #2a3b47;
+}
+.customers-list-name {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.customers-list-photo {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    margin-right: 10px;
+    border-radius: 50%;
+    object-fit: cover;
+}
+.customers-list-company {
+    display: inline-block;
+    max-width: 100%;
+    padding: 2px 10px;
+    border-radius: 10px;
+    background-color: #eef2f6;
+    color: #5b6b79;
+    font-size: 12px;
+    line-height: 18px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+@media (max-width:582px) {
+    .customers-list {
+        --customers-cols: minmax(0, 55fr) minmax(0, 45fr);
+    }
+    .customers-list-col-phone,
+    .customers-list-col-company {
+        display: none;
+    }
+}
 /*.customers-pager a:hover,
 .customers-pager a:active
 .customers-pager a:focus, {
@@ -3644,7 +4063,7 @@ ul.sidebar-block-list {
 }*/
 
 /**
- * Panel
+ * Panels
  */
 .panel-sortable .handle {
     cursor: move;
@@ -3675,6 +4094,15 @@ ul.sidebar-block-list {
 .panel-grey {
     background-color: #f8f9f9;
     border-color: #dde2e6;
+}
+.panel-group .panel {
+    border-radius: 8px;
+    box-shadow: 0 1px 2px rgba(23, 43, 58, .06), 0 1px 8px rgba(23, 43, 58, .05);
+    border: 1px solid #e1e5e8;
+}
+.panel-heading {
+    border-bottom: 1px solid #e1e5e8;
+    border-radius: 8px 8px 0 0;
 }
 
 /**
@@ -4145,6 +4573,16 @@ a.help-icon:hover {
 .text-larger {
     font-size: 16.8px;
 }
+.text-link,
+.text-link:focus {
+    color: #0078D7!important;
+    text-decoration: none!important;
+    cursor: pointer;
+}
+.text-link:hover {
+    color: #000!important;
+    text-decoration: none!important;
+}
 #loader-main {
     position: fixed;
     display: none;
@@ -4283,8 +4721,7 @@ a.disabled:focus {
     left: -5px;
 }
 .hover-shade:hover {
-    -webkit-box-shadow:0 0 13px rgba(0,0,0,.2);
-    box-shadow:0 0 13px rgba(0,0,0,.2);
+    box-shadow:0 0 5px rgba(0,0,0,.2);
 }
 .dropdown-menu > li > span {
     display: block;
@@ -4470,6 +4907,7 @@ a.disabled:focus {
 .fs-tag-btn {
     margin-top: 8px;
     margin-right: 8px;
+    height: 24px;
     line-height: 14px;
     font-size: 15px;
     padding: 4px 6px 4px 6px;
@@ -4560,6 +4998,7 @@ a.disabled:focus {
     text-align: center;
     height: 45px !important;
     line-height: 35px !important;
+    background-color: #fff;
 }
 .chats-load-more i {
     font-size: 18px !important;
@@ -4592,6 +5031,10 @@ a.disabled:focus {
     .col1-hidden {
         display: none;
     }
+    #conv-list-open,
+    #conv-list-col {
+        display: none;
+    }
 }
 @media (min-width:992px) {
     .sidebar-2col {
@@ -4615,9 +5058,4 @@ a.disabled:focus {
     }
 }
 
-.btn {
-    border-radius: 5px;
-}
-.panel-group .panel {
-    border-radius: 5px;
-}
+

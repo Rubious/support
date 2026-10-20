@@ -19,7 +19,7 @@ class Attachment extends Model
 
     const DIRECTORY = 'attachment';
 
-    const DISK = 'private';
+    const DISK = 'local_app';
 
     const MIME_TYPE_MAX_LENGTH = 127;
 
@@ -135,7 +135,7 @@ class Attachment extends Model
         $file_info = self::saveFileToDisk($attachment, $file_name, $content, $uploaded_file);
 
         $attachment->file_dir = $file_info['file_dir'];
-        $attachment->size = Storage::disk(self::DISK)->size($file_info['file_path']);
+        $attachment->size = self::getDisk()->size($file_info['file_path']);
         $attachment->save();
 
         return $attachment;
@@ -143,6 +143,7 @@ class Attachment extends Model
 
     /**
      * Save file to the disk and return file_dir.
+     * $content may be a resource pointing to the file in remote storage.
      */
     public static function saveFileToDisk($attachment, $file_name, $content, $uploaded_file)
     {
@@ -152,24 +153,41 @@ class Attachment extends Model
         $file_dir = self::generatePath($attachment->id);
 
         $i = 0;
+        // After this number of attempts $i is retrieved from DB
+        // instead of checking file existence.
+        // https://github.com/freescout-help-desk/freescout/issues/5730
+        $check_db_from = 4;
         do {
+            // $i starts from 1.
             $i++;
+            // Try to get the latest $i for this file name from DB.
+            if ($i == $check_db_from) {
+                $db_i = (int)self::where('file_name', $file_name)
+                    ->where('file_dir', 'like', addcslashes($file_dir, '%_\\').'%')
+                    ->count();
+                if ($db_i && $db_i >= $check_db_from-1) {
+                    $i = $db_i + 1;
+                }
+            }
             $file_path = self::DIRECTORY.DIRECTORY_SEPARATOR.$file_dir.$i.DIRECTORY_SEPARATOR.$file_name;
-        } while (Storage::disk(self::DISK)->exists($file_path));
+        } while (self::getDisk()->exists($file_path));
 
         $file_dir .= $i.DIRECTORY_SEPARATOR;
 
         try {
             if ($uploaded_file) {
-                $uploaded_file->storeAs(self::DIRECTORY.DIRECTORY_SEPARATOR.$file_dir, $file_name, ['disk' => self::DISK]);
+                $uploaded_file->storeAs(self::DIRECTORY.DIRECTORY_SEPARATOR.$file_dir, $file_name, self::getDiskName());
             } else {
-                Storage::disk(self::DISK)->put($file_path, $content);
+                self::getDisk()->put($file_path, $content);
             }
         } catch (\Exception $e) {
             \Helper::logException($e, '[Attachment::saveFileToDisk()]');
         }
 
-        \Helper::sanitizeUploadedFileData($file_path, \Helper::getPrivateStorage(), $content);
+        // $content may be a stream resource rather than a string; the SVG sanitizer needs
+        // actual string content, so let it re-read the just-written file in that case instead
+        // of treating the resource as file content.
+        \Helper::sanitizeUploadedFileData($file_path, is_resource($content) ? null : $content);
 
         return [
             'file_dir'  => $file_dir,
@@ -266,7 +284,7 @@ class Attachment extends Model
         // URL must contain only forward slashes.
         $file_path = str_replace(DIRECTORY_SEPARATOR, '/', $file_path);
 
-        $file_url = Storage::url($file_path);
+        $file_url = self::getDisk()->url($file_path);
 
         // Fix percents.
         // https://github.com/freescout-helpdesk/freescout/issues/3530
@@ -296,7 +314,7 @@ class Attachment extends Model
     public function download($view = false, $headers = [])
     {
         // #533
-        //return $this->getDisk()->download($this->getStorageFilePath(), \Str::ascii($this->file_name));
+        //return self::getDisk()->download($this->getStorageFilePath(), \Str::ascii($this->file_name));
         if ($view) {
             $headers['Content-Disposition'] = '';
         }
@@ -306,12 +324,10 @@ class Attachment extends Model
             $file_name = $file_name.'.eml';
         }
 
-        return $this->getDisk()->download($this->getStorageFilePath(), $file_name, $headers);
-    }
+        // Cache attachments in browser - 1 month.
+        $headers['Cache-Control'] = 'max-age=2592000';
 
-    private function getDisk()
-    {
-        return Storage::disk(self::DISK);
+        return self::getDisk()->download($this->getStorageFilePath(), $file_name, $headers);
     }
 
     /**
@@ -338,7 +354,7 @@ class Attachment extends Model
     public function getLocalFilePath($full = true)
     {
         if ($full) {
-            return $this->getDisk()->path(self::DIRECTORY.DIRECTORY_SEPARATOR.$this->file_dir.$this->file_name);
+            return self::getDisk()->path(self::DIRECTORY.DIRECTORY_SEPARATOR.$this->file_dir.$this->file_name);
         } else {
             return DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.self::DIRECTORY.DIRECTORY_SEPARATOR.$this->file_dir.$this->file_name;
         }
@@ -349,7 +365,7 @@ class Attachment extends Model
      */
     public function fileExists()
     {
-        return $this->getDisk()->exists(self::DIRECTORY.DIRECTORY_SEPARATOR.$this->file_dir.$this->file_name);
+        return self::getDisk()->exists(self::DIRECTORY.DIRECTORY_SEPARATOR.$this->file_dir.$this->file_name);
     }
 
     public static function formatBytes($size, $precision = 0)
@@ -400,7 +416,7 @@ class Attachment extends Model
     {
         // Delete from disk
         foreach ($attachments as $attachment) {
-            $attachment->getDisk()->delete($attachment->getStorageFilePath());
+            self::getDisk()->delete($attachment->getStorageFilePath());
         }
 
         // Delete from DB
@@ -441,6 +457,10 @@ class Attachment extends Model
      */
     public function duplicate($thread_id = null)
     {
+        if (!$this->fileExists()) {
+            return null;
+        }
+
         $new_attachment = $this->replicate();
         
         $new_attachment->thread_id = $thread_id;
@@ -448,12 +468,20 @@ class Attachment extends Model
         $new_attachment->save();
 
         try {
-            $attachment_file = new \Illuminate\Http\UploadedFile(
-                $this->getLocalFilePath(), $this->file_name,
-                null, null, true
-            );
+            $content_stream = '';
+            $attachment_file = null;
 
-            $file_info = Attachment::saveFileToDisk($new_attachment, $new_attachment->file_name, '', $attachment_file);
+            if (\Helper::isLocalStorage()) {
+                $attachment_file = new \Illuminate\Http\UploadedFile(
+                    $this->getLocalFilePath(), $this->file_name,
+                    null, null, true
+                );
+            } else {
+                // File in remote storage.
+                $content_stream = $this->getFileStream();
+            }
+
+            $file_info = Attachment::saveFileToDisk($new_attachment, $new_attachment->file_name, $content_stream, $attachment_file);
 
             if (!empty($file_info['file_dir'])) {
                 $new_attachment->file_dir = $file_info['file_dir'];
@@ -468,6 +496,41 @@ class Attachment extends Model
 
     public function getFileContents()
     {
-        return $this->getDisk()->get($this->getStorageFilePath());
+        try {
+            return self::getDisk()->get($this->getStorageFilePath());
+        } catch (\Exception $e) {
+            // File not found at path:...
+            \Helper::logException($e, '[Attachment::getFileContents()]');
+            return '';
+        }
+    }
+
+    /**
+     * Same as getFileContents(), but as a stream instead of loading the whole
+     * file into memory - use this when the bytes are only being copied
+     * elsewhere (e.g. duplicating/forwarding an attachment).
+     */
+    public function getFileStream()
+    {
+        try {
+            return self::getDisk()->readStream($this->getStorageFilePath());
+        } catch (\Exception $e) {
+            \Helper::logException($e, '[Attachment::getFileStream()]');
+            return null;
+        }
+    }
+
+    public static function getDiskName()
+    {
+        if (\Helper::isLocalStorage()) {
+            return self::DISK;
+        } else {
+            return config('filesystems.default');
+        }
+    }
+
+    public static function getDisk()
+    {
+        return Storage::disk(self::getDiskName());
     }
 }

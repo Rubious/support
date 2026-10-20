@@ -3,7 +3,8 @@
 <head>
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    {{-- maximum-scale=1 prevents iOS from zooming in on focusing a field (#4698). Android does not zoom in on focus, but disables pinch zoom with maximum-scale. --}}
+    <meta name="viewport" content="width=device-width, initial-scale=1{{ \Helper::isAndroid() ? '' : ', maximum-scale=1' }}">
     <meta name="robots" content="noindex,nofollow">
     
     <!-- CSRF Token -->
@@ -210,7 +211,7 @@
 
                                     <ul class="dropdown-menu dropdown-with-icons">
                                         <li>
-                                            <form class="form-inline form-nav-search" role="form" action="{{ route('conversations.search') }}" target="_blank">
+                                            <form class="form-inline form-nav-search" role="form" action="{{ route('conversations.search') }}">
                                                 <div class="input-group">
                                                     <input type="text" class="form-control" name="q">
                                                     <span class="input-group-btn">
@@ -240,6 +241,11 @@
                 <div class="sidebar-2col">
                     @yield('sidebar')
                 </div>
+                @if ($__env->yieldContent('conv_list_col'))
+                    <div id="conv-list-2col" @if (!Helper::isConvListVisible())class="hidden"@endif>
+                        @yield('conv_list_col')
+                    </div>
+                @endif
                 <div class="content-2col">
                     @yield('content')
                 </div>

@@ -139,6 +139,8 @@ class Mailbox extends Model
     const DEFAULT_SIGNATURE = '<br><span style="color:#808080;">--<br>
 {%mailbox.name%}</span>';
 
+    const META_STATE = 'st';
+
     /**
      * Default values.
      */
@@ -229,7 +231,7 @@ class Mailbox extends Model
      */
     public function getStateAttribute()
     {
-        return $this->getMeta('st', self::STATE_ACTIVE);
+        return $this->getMeta(self::META_STATE, self::STATE_ACTIVE);
     }
 
     public function setStateAttribute($value)
@@ -238,7 +240,7 @@ class Mailbox extends Model
         if (!in_array($value, [self::STATE_ACTIVE, self::STATE_ARCHIVED])) {
             $value = self::STATE_ACTIVE;
         }
-        $this->setMeta('st', $value);
+        $this->setMeta(self::META_STATE, $value);
     }
 
     /**
@@ -394,14 +396,18 @@ class Mailbox extends Model
     /**
      * Get folders available for the current user.
      */
-    public function getAssesibleFolders()
+    public function getAssesibleFolders($user = null)
     {
+        if (!$user) {
+            $user = auth()->user();
+        }
+
         $folders = $this->folders()
-            ->where(function ($query) {
+            ->where(function ($query) use ($user) {
                 $query->whereIn('type', \Eventy::filter('mailbox.folders.public_types', Folder::$public_types))
-                    ->orWhere(function ($query2) {
+                    ->orWhere(function ($query2) use ($user) {
                         $query2->whereIn('type', Folder::$personal_types);
-                        $query2->where(['user_id' => auth()->user()->id]);
+                        $query2->where(['user_id' => $user->id]);
                     });
             })
             ->orderBy('type')
@@ -576,6 +582,11 @@ class Mailbox extends Model
             } else {
                 $user = User::find($user_id);
             }
+        } else {
+            $user_id = $user->id;
+        }
+        if (!$user->isAdmin() && !$this->isActive()) {
+            return false;
         }
         $filter = \Eventy::filter('mailbox.user_has_access', -1, $this, $user);
         if ($filter != -1) {
@@ -1158,16 +1169,21 @@ class Mailbox extends Model
     {
         if (is_array($mailboxes)) {
             // Array.
+            $found = false;
             foreach ($mailboxes as $i => $mailbox) {
                 if ($mailbox->isArchived()) {
+                    $found = true;
                     unset($mailboxes[$i]);
                 }
+            }
+            if ($found) {
+                $mailboxes = array_values($mailboxes);
             }
         } else {
             // Collection.
             $mailboxes = $mailboxes->reject(function ($mailbox) {
                 return $mailbox->isArchived();
-            });
+            })->values();
         }
 
         return $mailboxes;

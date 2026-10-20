@@ -118,15 +118,36 @@ class OpenController extends Controller
             'time_format' => $request->time_format,
         ];
 
-        $user->fill($request_data);
+        $password = bcrypt($request->password);
+        $photo_url = $user->photo_url;
 
-        $user->password = bcrypt($request->password);
+        $user = \DB::transaction(function () use ($user, $hash, $invite_sent_at, $request, $request_data, $password, $photo_url) {
+            // Lock and revalidate the invitation immediately before consuming it.
+            // This prevents concurrent requests from redeeming the same invitation.
+            $user = User::where('id', $user->id)
+                ->where('invite_hash', $hash)
+                ->lockForUpdate()
+                ->first();
 
-        $user->invite_state = User::INVITE_STATE_ACTIVATED;
-        $user->invite_hash = '';
-        
-        $user = \Eventy::filter('user.setup_save', $user, $request);
-        $user->save();
+            if (!$user) {
+                abort(404);
+            }
+
+            if (!$this->isInviteExpirationValid($invite_sent_at, $user)) {
+                \Helper::denyAccess();
+            }
+
+            $user->fill($request_data);
+            $user->photo_url = $photo_url;
+            $user->password = $password;
+            $user->invite_state = User::INVITE_STATE_ACTIVATED;
+            $user->invite_hash = '';
+
+            $user = \Eventy::filter('user.setup_save', $user, $request);
+            $user->save();
+
+            return $user;
+        });
 
         // Login user
         Auth::guard()->login($user);
@@ -217,7 +238,7 @@ class OpenController extends Controller
         }
 
         // Check attachment name.
-        if (trim($attachment->file_name) != trim($file_name)) {
+        if (mb_strtolower(trim($attachment->file_name)) != mb_strtolower(trim($file_name))) {
             return \Helper::denyAccess();
         }
 
@@ -258,7 +279,7 @@ class OpenController extends Controller
             }
         }
 
-        // CSP header for exatra security.
+        // CSP header for extra security.
         $csp_header_value = "script-src 'none'; frame-src 'none'; object-src 'none'; font-src 'none'; connect-src 'none'; media-src 'self'; form-action 'none'; base-uri 'none'; sandbox";
 
         // https://github.com/freescout-help-desk/freescout/issues/5281
@@ -275,6 +296,7 @@ class OpenController extends Controller
             $csp_header_value .= ' allow-same-origin';
         }
 
+        // Send file.
         if (config('app.download_attachments_via') == 'apache') {
             // Send using Apache mod_xsendfile.
             $response = response(null)
@@ -303,8 +325,8 @@ class OpenController extends Controller
             }
         } else {
             // Send via PHP.
-            // In this case downloading or showing the attachment
-            // is controlled via web server config or /storage/app/public/.htaccess.
+            // In this case whether the file is viewed or downloaded is controlled
+            // via the web server config or /storage/app/public/.htaccess.
             $headers = [
                 'Content-Type' => $attachment->mime_type,
                 // Laravel adds 'nosniff' by itself.
@@ -318,7 +340,7 @@ class OpenController extends Controller
             // Browsers disable seeking without it, so audio and video attachments
             // can not be rewound or fast forwarded. BinaryFileResponse handles
             // Range requests, so use it whenever the file is shown in the browser.
-            if ($view_attachment && $attachment->fileExists()) {
+            if ($view_attachment && \Helper::isLocalStorage() && $attachment->fileExists()) {
                 $response = response()->file(
                     $attachment->getLocalFilePath(),
                     $headers

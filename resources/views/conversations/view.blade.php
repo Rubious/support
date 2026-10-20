@@ -2,11 +2,13 @@
 
 @php
     $is_in_chat_mode = $conversation->isInChatMode();
+    $is_print_mode = app('request')->input('print');
+    $conv_col_allowed = !$is_print_mode && !$is_in_chat_mode && !empty($folder);
 @endphp
 
 @section('title_full', '#'.$conversation->number.' '.$conversation->getSubject().($customer ? ' - '.$customer->getFullName(true) : ''))
 
-@if (app('request')->input('print'))
+@if ($is_print_mode)
     @section('body_class', 'body-conv print')
 @else
     @section('body_class', 'body-conv'.($is_in_chat_mode ? ' chat-mode' : ''))
@@ -19,12 +21,29 @@
     @include('mailboxes/sidebar_menu_view')
 @endsection
 
+@if ($conv_col_allowed)
+    @section('conv_list_col')
+        <div id="conv-list-col" data-mailbox_id="{{ $mailbox->id }}" data-folder_id="{{ $folder->id }}" data-conversation_id="{{ $conversation->id }}">
+            <div id="conv-list-col-header">
+                <span id="conv-list-col-title"><small class="glyphicon glyphicon-folder-close text-help"></small> &nbsp;{{ __('Conversations') }}</span>
+                <span id="conv-list-col-toggle" role="button" class="link-grey" data-toggle="tooltip" title="{{ __('Hide') }}"><i class="glyphicon glyphicon-chevron-left"></i></span>
+            </div>
+            <ul class="sidebar-menu chats conv-list" id="conv-list-col-items"></ul>
+        </div>
+    @endsection
+@endif
+
 @section('content')
     @include('partials/flash_messages')
 
     <div id="conv-layout" class="conv-type-{{ strtolower($conversation->getTypeName()) }} @if ($is_following) conv-following @endif">
         <div id="conv-layout-header">
             <div id="conv-toolbar">
+                @if ($conv_col_allowed)
+                    <div id="conv-list-open" class="link-grey @if (Helper::isConvListVisible()) hidden @endif" role="button" data-toggle="tooltip" title="{{ __('Conversations') }}">
+                        <i class="glyphicon glyphicon-chevron-right"></i>
+                    </div>
+                @endif
 
                 <div class="conv-actions">
                     @php
@@ -42,7 +61,8 @@
                                   data-placement="bottom"
                                   title="{{ $action['label'] }}"
                                   aria-label="{{ $action['label'] }}"
-                                  role="button"></span>
+                                  role="button"
+                                  tabindex="0"></span>
                         @elseif (!empty($action['url']))
                             {{-- Action with URL (like move, merge) --}}
                             <a href="{{ $action['url']($conversation) }}"
@@ -69,6 +89,7 @@
                                   title="{{ $action['label'] }}"
                                   aria-label="{{ $action['label'] }}"
                                   role="button"
+                                  tabindex="0"
                             @if (!empty($action['attrs']))
                                 @foreach ($action['attrs'] as $attr_key => $attr_value)
                                     {{ $attr_key }}="{{ $attr_value }}"
@@ -85,6 +106,7 @@
         <span class="conv-action glyphicon glyphicon-option-horizontal dropdown-toggle"
               data-toggle="dropdown"
               role="button"
+              tabindex="0"
               aria-haspopup="true"
               aria-expanded="false"
               aria-label="{{ __('More Actions') }}"></span>
@@ -190,6 +212,10 @@
             <div id="conv-subject">
                 <div class="conv-subj-block">
                     <div class="conv-subjwrap">
+                        {{-- Floated, so it goes before the subject which wraps around it --}}
+                        <div class="conv-numnav">
+                            <i role="button" tabindex="0" class="glyphicon conv-star @if ($conversation->isStarredByUser()) glyphicon-star @else glyphicon-star-empty @endif" title="@if ($conversation->isStarredByUser()){{ __("Unstar Conversation") }}@else{{ __("Star Conversation") }}@endif"></i>&nbsp; # <strong>{{ $conversation->number }}</strong>
+                        </div>
                         <div class="conv-subjtext">
                             <span>{{ $conversation->getSubject() }}</span>
                             <div class="input-group input-group-lg conv-subj-editor">
@@ -201,13 +227,10 @@
                         </div>
                         @if ($conversation->isChat() && $conversation->getChannelName())
                             <span class="conv-tags">
-                                @if (\Helper::isChatMode())<a class="btn btn-default fs-tag-btn" href="{{ request()->fullUrlWithQuery(['chat_mode' => '0']) }}" title="{{ __('Exit') }}" data-toggle="tooltip"><small class="glyphicon glyphicon-stop"></small> {{ __('Chat Mode') }}</a>@else<a class="btn btn-primary fs-tag-btn" href="{{ request()->fullUrlWithQuery(['chat_mode' => '1']) }}"><small class="glyphicon glyphicon-play"></small> {{ __('Chat Mode') }}</a>@endif<span class="fs-tag fs-tag-md"><a class="fs-tag-name" href="#"><small class="glyphicon glyphicon-phone"></small> {{ $conversation->getChannelName() }}</a></span>
+                                @if (\Helper::isChatMode())<a class="btn btn-default fs-tag-btn" href="{{ request()->fullUrlWithQuery(['chat_mode' => '0']) }}" title="{{ __('Exit') }}" data-toggle="tooltip"><small class="glyphicon glyphicon-remove"></small> {{ __('Chat Mode') }}</a>@else<a class="btn btn-primary fs-tag-btn" href="{{ request()->fullUrlWithQuery(['chat_mode' => '1']) }}"><small class="glyphicon glyphicon-comment"></small> {{ __('Chat Mode') }}</a>@endif<span class="fs-tag fs-tag-md"><a class="fs-tag-name" href="#"><small class="glyphicon glyphicon-phone"></small> {{ $conversation->getChannelName() }}</a></span>
                             </span>
                         @endif
                         @action('conversation.after_subject', $conversation, $mailbox)
-                        <div class="conv-numnav">
-                            <i class="glyphicon conv-star @if ($conversation->isStarredByUser()) glyphicon-star @else glyphicon-star-empty @endif" title="@if ($conversation->isStarredByUser()){{ __("Unstar Conversation") }}@else{{ __("Star Conversation") }}@endif"></i>&nbsp; # <strong>{{ $conversation->number }}</strong>
-                        </div>
                         <div id="conv-viewers">
                             @foreach ($viewers as $viewer)
                                 <span class="photo-xs viewer-{{ $viewer['user']->id }} @if ($viewer['replying']) viewer-replying @endif" data-toggle="tooltip" title="@if ($viewer['replying']){{ __(':user is replying', ['user' => $viewer['user']->getFullName()]) }}@else{{ __(':user is viewing', ['user' => $viewer['user']->getFullName()]) }}@endif">

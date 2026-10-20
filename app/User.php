@@ -84,7 +84,7 @@ class User extends Authenticatable
     /**
      * User permissions.
      * Core permissions have IDs below 100.
-     * Permissions in custom modules should use IDs above 1000.
+     * Permissions in custom modules should use string IDs: "modulealias.permission"
      */
     const PERM_DELETE_CONVERSATIONS = 1;
     const PERM_EDIT_CONVERSATIONS   = 2;
@@ -232,7 +232,7 @@ class User extends Authenticatable
      */
     public function getFullName()
     {
-        return \Eventy::filter('user.full_name', $this->first_name.' '.$this->last_name, $this);
+        return \Eventy::filter('user.full_name', trim($this->first_name.' '.$this->last_name), $this);
     }
 
     /**
@@ -335,12 +335,23 @@ class User extends Authenticatable
         if ($this->isAdmin()) {
             return Mailbox::pluck('id')->toArray();
         } else {
-            return $this->mailboxes()->pluck('mailboxes.id')->toArray();
+            $mailboxes = $this->mailboxes()->pluck('mailboxes.meta', 'mailboxes.id');
+            // Exclude archived mailboxes.
+            return $mailboxes->filter(function ($meta) {
+                $meta = json_decode($meta ?? '', true);
+                if (!isset($meta[Mailbox::META_STATE])) {
+                    return true;
+                }
+                return $meta[Mailbox::META_STATE] == Mailbox::STATE_ACTIVE;
+            })->keys()->toArray();
         }
     }
 
     public function hasAccessToMailbox($mailbox_id)
     {
+        if ($this->isAdmin()) {
+            return true;
+        }
         $ids = $this->mailboxesIdsCanView();
         return in_array($mailbox_id, $ids);
     }
@@ -866,7 +877,7 @@ class User extends Authenticatable
                 $notifications = $user->getWebsiteNotifications();
 
                 $info = [
-                    'data'          => WebsiteNotification::fetchNotificationsData($notifications),
+                    'data'          => WebsiteNotification::fetchNotificationsData($notifications, $this),
                     'notifications' => $notifications,
                     'unread_count'  => $user->unreadNotifications()->count(),
                 ];
@@ -879,7 +890,7 @@ class User extends Authenticatable
             $notifications = $this->getWebsiteNotifications();
 
             $info = [
-                'data'          => WebsiteNotification::fetchNotificationsData($notifications),
+                'data'          => WebsiteNotification::fetchNotificationsData($notifications, $this),
                 'notifications' => $notifications,
                 'unread_count'  => $this->unreadNotifications()->count(),
             ];
@@ -929,7 +940,8 @@ class User extends Authenticatable
         }
 
         $file_name = md5(Hash::make($this->id)).'.jpg';
-        $dest_path = Storage::path(self::PHOTO_DIRECTORY.DIRECTORY_SEPARATOR.$file_name);
+        $storage_path = self::PHOTO_DIRECTORY.DIRECTORY_SEPARATOR.$file_name;
+        $dest_path = Storage::disk('local')->path($storage_path);
 
         $dest_dir = pathinfo($dest_path, PATHINFO_DIRNAME);
         if (!file_exists($dest_dir)) {
@@ -945,6 +957,8 @@ class User extends Authenticatable
         // $photo_url = $request->file('photo_url')->storeAs(
         //     User::PHOTO_DIRECTORY, !Hash::make($user->id).'.jpg'
         // );
+
+        $file_name = \Eventy::filter('user.save_photo', $file_name, $this, $dest_path, $storage_path);
 
         return $file_name;
     }
@@ -1349,7 +1363,7 @@ class User extends Authenticatable
 
     public function canSeeOnlyAssignedConversations()
     {
-        return $this->hasManageMailboxPermission(0, Mailbox::ACCESS_PERM_ASSIGNED);
+        return !$this->isAdmin() && $this->hasManageMailboxPermission(0, Mailbox::ACCESS_PERM_ASSIGNED);
     }
 
     public function deleteUser($auth_user, $assign_user)

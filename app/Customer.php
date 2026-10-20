@@ -183,6 +183,7 @@ class Customer extends Model
      */
     public static $search_filters = [
         'mailbox',
+        'company',
     ];
 
     /**
@@ -1404,7 +1405,8 @@ class Customer extends Model
         }
 
         $file_name = md5(Hash::make($this->id)).'.jpg';
-        $dest_path = Storage::path(self::PHOTO_DIRECTORY.DIRECTORY_SEPARATOR.$file_name);
+        $storage_path = self::PHOTO_DIRECTORY.DIRECTORY_SEPARATOR.$file_name;
+        $dest_path = Storage::disk('local')->path($storage_path);
 
         $dest_dir = pathinfo($dest_path, PATHINFO_DIRNAME);
         if (!file_exists($dest_dir)) {
@@ -1417,6 +1419,8 @@ class Customer extends Model
         }
 
         imagejpeg($resized_image, $dest_path, self::PHOTO_QUALITY);
+
+        $file_name = \Eventy::filter('customer.save_photo', $file_name, $this, $dest_path, $storage_path);
 
         return $file_name;
     }
@@ -1505,7 +1509,7 @@ class Customer extends Model
     public function setPhotoFromRemoteFile($url)
     {
         // Sanitize URL.
-        try {
+        /*try {
             \Helper::sanitizeRemoteUrl($url, true);
         } catch (\Exception $e) {
             if ($e->getCode() == \Helper::EXCEPTION_UNSAFE_URL) {
@@ -1514,20 +1518,21 @@ class Customer extends Model
             } else {
                 throw $e;
             }
-        }
+        }*/
 
+        // Quick check for response code 200.
         try {
             $headers = get_headers($url);
         } catch (\Exception $e) {
             \Helper::logException($e, 'Customer::setPhotoFromRemoteFile()');
             return false;
         }
-
         if (!preg_match("/200/", $headers[0])) {
             return false;
         }
 
-        $image_data = \Helper::getRemoteFileContents($url);
+        // URL sanitizing takes place in getRemoteFileContents().
+        $image_data = \Helper::getRemoteFileContents($url, $follow_redirects = false);
 
         if (!$image_data) {
             return false;

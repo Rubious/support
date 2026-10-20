@@ -100,12 +100,19 @@ class SendNotificationToUsers implements ShouldQueue
 
         foreach ($this->users as $user) {
 
+            // https://github.com/freescout-help-desk/freescout/security/advisories/GHSA-2j2c-g32w-96vm
+            $user->refresh();
+
             // User can ne deleted from DB.
             if (!isset($user->id)) {
                 continue;
             }
 
             if ($user->isDeleted()) {
+                continue;
+            }
+
+            if (!$user->can('view', $this->conversation)) {
                 continue;
             }
 
@@ -159,6 +166,7 @@ class SendNotificationToUsers implements ShouldQueue
                     ->causedBy($user)
                     ->withProperties([
                         'error'    => $e->getMessage().'; File: '.$e->getFile().' ('.$e->getLine().')',
+                        'conversation'   => '#'.$this->conversation->number.'-'.($last_thread ? $last_thread->id : ''),
                      ])
                     ->useLog(\App\ActivityLog::NAME_EMAILS_SENDING)
                     ->log(\App\ActivityLog::DESCRIPTION_EMAILS_SENDING_ERROR_TO_USER);

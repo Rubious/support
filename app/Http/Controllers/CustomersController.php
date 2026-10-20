@@ -142,7 +142,7 @@ class CustomersController extends Controller
                     'tag_email_begin' => '<strong>',
                     'tag_email_end'   => '</strong>',
                     'customer'        => htmlspecialchars($email->customer->getFullName()),
-                    'a_begin'         => '<strong><a href="'.$email->customer->url().'" target="_blank">',
+                    'a_begin'         => '<strong><a href="'.$email->customer->url().'">',
                     'a_end'           => '</a></strong>',
                 ]).' ';
 
@@ -444,6 +444,8 @@ class CustomersController extends Controller
                 if (!$response['msg']) {
                     $customer = Customer::create($request->email, $request->all());
                     if ($customer) {
+                        session()->put('user_created_customer', $customer->id);
+
                         $response['email']  = $request->email;
                         $response['status'] = 'success';
                     }
